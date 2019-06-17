@@ -306,6 +306,13 @@ func (c *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// remove the registration token
+	if err := c.store.DeleteRegistrationTokens([]string{request.Token}); err != nil {
+		c.log(LogLevelError, "failed to remove the trust request token", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
 	// TODO: notify peers of store update
 
 	// attempt to update the trust cache
