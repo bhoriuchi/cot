@@ -91,8 +91,8 @@ func (c *Server) Init() error {
 	return nil
 }
 
-// Verify parses the token and attempts to verify it with its cached jwks
-func (c *Server) Verify(tokenString string) (*jwt.Token, error) {
+// parses the token
+func (c *Server) parse(tokenString string) (*jwt.Token, error) {
 	return jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		kid, ok := token.Header["kid"]
 		if !ok {
@@ -104,6 +104,26 @@ func (c *Server) Verify(tokenString string) (*jwt.Token, error) {
 		}
 		return jwk.PublicKey()
 	})
+}
+
+// Verify parses the token and attempts to verify it with its cached jwks
+func (c *Server) Verify(tokenString string) (*jwt.Token, error) {
+	token, err := c.parse(tokenString)
+	if err == nil {
+		return token, nil
+	}
+	if token == nil {
+		return token, err
+	}
+
+	kid, ok := token.Header["kid"]
+	if !ok {
+		return token, fmt.Errorf("no key ID found in token")
+	}
+	if err := c.refreshTrust(kid.(string)); err != nil {
+		return token, err
+	}
+	return c.parse(tokenString)
 }
 
 // NewRegistrationToken issues a new registration token
