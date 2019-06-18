@@ -17,6 +17,7 @@ var (
 type Store interface {
 	Init() error
 	Type() Type
+	WithLogFunc(logFunc func(level, message string, err error)) Store
 
 	// registration tokens
 	PutRegistrationToken(token *types.RegistrationToken) error

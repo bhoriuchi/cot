@@ -3,13 +3,20 @@ package cot
 import "github.com/dgrijalva/jwt-go"
 
 // SignRS256WithClaims signs claims with RS256
-func SignRS256WithClaims(privateKeyPEM []byte, claims jwt.MapClaims) (string, error) {
+func SignRS256WithClaims(privateKeyPEM []byte, claims jwt.MapClaims, header map[string]interface{}) (string, error) {
 	privateKey, err := jwt.ParseRSAPrivateKeyFromPEM(privateKeyPEM)
 	if err != nil {
 		return "", err
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+
+	if header != nil {
+		for name, value := range header {
+			token.Header[name] = value
+		}
+	}
+
 	return token.SignedString(privateKey)
 }
 

@@ -18,6 +18,8 @@ const (
 	DefaultKeyPairBucket      = "keypair"
 	DefaultTrustBucket        = "trust"
 	DefaultTrustClientBucket  = "trust_client"
+	LogLevelError             = "error"
+	LogLevelDebug             = "debug"
 )
 
 // Options store options
@@ -27,15 +29,18 @@ type Options struct {
 	KeyPairBucket      string
 	TrustBucket        string
 	TrustClientBucket  string
+	LogFunc            func(level, message string, err error)
 }
 
 // Store a boltdb store for the trust
 type Store struct {
+	initialized        bool
 	database           string
 	registrationBucket []byte
 	keypairBucket      []byte
 	trustBucket        []byte
 	trustClientBucket  []byte
+	log                func(level, message string, err error)
 }
 
 // TrustClientConfigData a json wrapper for putting config data
@@ -63,11 +68,13 @@ func NewStore(opts *Options) *Store {
 	}
 
 	return &Store{
+		initialized:        false,
 		database:           o.Database,
 		registrationBucket: []byte(o.RegistrationBucket),
 		keypairBucket:      []byte(o.KeyPairBucket),
 		trustBucket:        []byte(o.TrustBucket),
 		trustClientBucket:  []byte(o.TrustClientBucket),
+		log:                o.LogFunc,
 	}
 }
 
@@ -76,10 +83,27 @@ func (c *Store) Type() store.Type {
 	return store.StoreTypeDistributed
 }
 
+// WithLogFunc adds a logging function to the store
+func (c *Store) WithLogFunc(logFunc func(level, message string, err error)) store.Store {
+	if logFunc != nil && c.log != nil {
+		c.log = logFunc
+	}
+	return c
+}
+
 // Init inits the store
 func (c *Store) Init() error {
+	if c.initialized {
+		return nil
+	}
+	if c.log == nil {
+		c.log = func(level, message string, err error) {}
+	}
+
 	if c.database == "" {
-		return fmt.Errorf("no database file specified")
+		err := fmt.Errorf("No database file specified")
+		c.log(LogLevelError, "No database file specified", err)
+		return err
 	}
 
 	buckets := [][]byte{
@@ -92,22 +116,25 @@ func (c *Store) Init() error {
 	// get the absolute path for the file
 	absPath, err := filepath.Abs(c.database)
 	if err != nil {
+		c.log(LogLevelError, "Trust store failed to get absolute database path", err)
 		return err
 	}
 	c.database = absPath
 
 	// ensure the directory path exists
 	if err := os.MkdirAll(filepath.Dir(absPath), 0755); err != nil {
+		c.log(LogLevelError, "Trust store failed to make database path", err)
 		return err
 	}
 
 	// open the db and ensure the buckets
 	db, err := bolt.Open(c.database, 0666, nil)
 	if err != nil {
+		c.log(LogLevelError, "Trust store failed to open embedded database", err)
 		return err
 	}
 	defer db.Close()
-	return db.Update(func(tx *bolt.Tx) error {
+	err = db.Update(func(tx *bolt.Tx) error {
 		for _, bucket := range buckets {
 			if _, err := tx.CreateBucketIfNotExists(bucket); err != nil {
 				return err
@@ -115,20 +142,30 @@ func (c *Store) Init() error {
 		}
 		return nil
 	})
+
+	if err != nil {
+		return err
+	}
+	c.initialized = true
+	return nil
 }
 
 // put puts an item in the database
 func (c *Store) put(data interface{}, key, bucket []byte) error {
 	if data == nil {
-		return fmt.Errorf("no %s provied to put", bucket)
+		err := fmt.Errorf("No %s provied to put", bucket)
+		c.log(LogLevelError, "Trust store failed to put data", err)
+		return err
 	}
 	value, err := json.Marshal(data)
 	if err != nil {
+		c.log(LogLevelError, "Trust store failed to unmarshal data", err)
 		return err
 	}
 
 	db, err := bolt.Open(c.database, 0666, nil)
 	if err != nil {
+		c.log(LogLevelError, "Trust store failed to open embedded database", err)
 		return err
 	}
 	defer db.Close()
@@ -147,6 +184,7 @@ func (c *Store) del(ids []string, bucket []byte) error {
 
 	db, err := bolt.Open(c.database, 0666, nil)
 	if err != nil {
+		c.log(LogLevelError, "Trust store failed to open embedded database", err)
 		return err
 	}
 	defer db.Close()
@@ -155,6 +193,7 @@ func (c *Store) del(ids []string, bucket []byte) error {
 		b := tx.Bucket(bucket)
 		for _, id := range ids {
 			if err := b.Delete([]byte(id)); err != nil {
+				c.log(LogLevelError, "Trust store failed to delete record", err)
 				return err
 			}
 		}
@@ -166,6 +205,7 @@ func (c *Store) del(ids []string, bucket []byte) error {
 func (c *Store) list(ids []string, bucket []byte) ([]byte, error) {
 	db, err := bolt.Open(c.database, 0666, nil)
 	if err != nil {
+		c.log(LogLevelError, "Trust store failed to open embedded database", err)
 		return nil, err
 	}
 	defer db.Close()
@@ -186,6 +226,7 @@ func (c *Store) list(ids []string, bucket []byte) ([]byte, error) {
 			return nil
 		})
 	}); err != nil {
+		c.log(LogLevelError, "Trust store failed to list bucket data", err)
 		return nil, err
 	}
 
@@ -193,14 +234,8 @@ func (c *Store) list(ids []string, bucket []byte) ([]byte, error) {
 		return []byte("[]"), nil
 	}
 
-	arr := append(
-		[]byte("["),
-		bytes.Join(
-			append(values, []byte("]")),
-			[]byte(","),
-		)...,
-	)
-	return arr, nil
+	arr := fmt.Sprintf("[%s]", bytes.Join(values, []byte(",")))
+	return []byte(arr), nil
 }
 
 // PutRegistrationToken puts a registration token
@@ -246,6 +281,7 @@ func (c *Store) GetKeyPairs(ids []string) ([]*types.KeyPair, error) {
 
 	var keypairs []*types.KeyPair
 	if err := json.Unmarshal(list, &keypairs); err != nil {
+		c.log(LogLevelError, "Trust store failed to unmarshal data from the embedded database", err)
 		return nil, err
 	}
 	return keypairs, nil
@@ -265,11 +301,13 @@ func (c *Store) DeleteTrusts(ids []string) error {
 func (c *Store) GetTrusts(ids []string) ([]*types.Trust, error) {
 	list, err := c.list(ids, c.trustBucket)
 	if err != nil {
+		c.log(LogLevelError, "Trust failed to list trusts", err)
 		return nil, err
 	}
 
 	var trusts []*types.Trust
 	if err := json.Unmarshal(list, &trusts); err != nil {
+		c.log(LogLevelError, "Trust store failed to unmarshal data from the embedded database", err)
 		return nil, err
 	}
 	return trusts, nil
@@ -285,15 +323,18 @@ func (c *Store) PutTrustClientConfig(key, value string) error {
 func (c *Store) GetTrustClientConfig(key string) (string, bool, error) {
 	list, err := c.list([]string{key}, c.trustClientBucket)
 	if err != nil {
+		c.log(LogLevelError, "Failed to retrieve list from client bucket", err)
 		return "", false, err
 	}
 
 	var data []*TrustClientConfigData
 	if err := json.Unmarshal(list, &data); err != nil {
+		c.log(LogLevelError, "Trust store failed to unmarshal data from the embedded database", err)
 		return "", true, err
 	}
 
 	if len(data) == 0 {
+		c.log(LogLevelDebug, fmt.Sprintf("No trust client config found for key %q", key), nil)
 		return "", false, nil
 	}
 

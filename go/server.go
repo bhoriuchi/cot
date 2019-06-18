@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/bhoriuchi/cot/go/store"
@@ -28,6 +27,7 @@ type Server struct {
 	peers                map[string]string
 	initialized          bool
 	registrationTokenTTL int
+	jwtCookieName        string
 	store                store.Store
 	log                  func(level, message string, err error)
 	trustJWKS            *JSONWebKeySet
@@ -39,6 +39,7 @@ type ServerOptions struct {
 	Insecure             bool
 	RequestTimeout       int
 	RegistrationTokenTTL int
+	JWTCookieName        string
 	Store                store.Store
 	LogFunc              func(level, message string, err error)
 }
@@ -59,9 +60,14 @@ func NewServer(opts *ServerOptions) *Server {
 		o.RegistrationTokenTTL = DefaultRequestTokenTTL
 	}
 
+	if o.LogFunc == nil {
+		o.LogFunc = func(level, message string, err error) {}
+	}
+
 	return &Server{
 		registrationTokenTTL: o.RegistrationTokenTTL,
 		store:                o.Store,
+		jwtCookieName:        o.JWTCookieName,
 		httpClient: &http.Client{
 			Timeout: time.Duration(timeout) * time.Second,
 			Transport: &http.Transport{
@@ -78,16 +84,17 @@ func (c *Server) Init() error {
 		return nil
 	}
 
-	c.log(LogLevelDebug, "initializing trust server", nil)
-	if err := c.store.Init(); err != nil {
-		c.log(LogLevelError, "failed to initialize the trust server store", err)
+	c.log(LogLevelDebug, "Initializing trust server", nil)
+	if err := c.store.WithLogFunc(c.log).Init(); err != nil {
+		c.log(LogLevelError, "Failed to initialize the trust server store", err)
 		return err
 	}
 
 	if err := c.refreshAllTrusts(); err != nil {
-		return err
+		c.log(LogLevelError, "Failed to refresh all registered server trusts", err)
 	}
 
+	c.log(LogLevelDebug, "SUCCESS! Initialized the trust server", nil)
 	return nil
 }
 
@@ -96,11 +103,12 @@ func (c *Server) parse(tokenString string) (*jwt.Token, error) {
 	return jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		kid, ok := token.Header["kid"]
 		if !ok {
-			return nil, fmt.Errorf("no key ID found in token")
+			return nil, fmt.Errorf("No key ID found in token")
 		}
+
 		jwk := c.trustJWKS.GetKey(kid.(string))
 		if jwk == nil {
-			return nil, fmt.Errorf("key ID %s not found in the current JWKS", kid.(string))
+			return nil, fmt.Errorf("Key ID %s not found in the current JWKS", kid.(string))
 		}
 		return jwk.PublicKey()
 	})
@@ -118,9 +126,11 @@ func (c *Server) Verify(tokenString string) (*jwt.Token, error) {
 
 	kid, ok := token.Header["kid"]
 	if !ok {
-		return token, fmt.Errorf("no key ID found in token")
+		return token, fmt.Errorf("No key ID found in token")
 	}
+
 	if err := c.refreshTrust(kid.(string)); err != nil {
+		c.log(LogLevelError, "failed to refresh trust", err)
 		return token, err
 	}
 	return c.parse(tokenString)
@@ -128,7 +138,7 @@ func (c *Server) Verify(tokenString string) (*jwt.Token, error) {
 
 // NewRegistrationToken issues a new registration token
 func (c *Server) NewRegistrationToken() (*types.RegistrationToken, error) {
-	c.log(LogLevelDebug, "generating a new registration token", nil)
+	c.log(LogLevelDebug, "Generating a new registration token", nil)
 	if err := c.Init(); err != nil {
 		return nil, err
 	}
@@ -139,7 +149,7 @@ func (c *Server) NewRegistrationToken() (*types.RegistrationToken, error) {
 	}
 
 	if err := c.store.PutRegistrationToken(token); err != nil {
-		c.log(LogLevelError, "failed to put trust registration token", err)
+		c.log(LogLevelError, "Failed to put trust registration token", err)
 		return nil, err
 	}
 
@@ -148,21 +158,17 @@ func (c *Server) NewRegistrationToken() (*types.RegistrationToken, error) {
 
 // removes expired registration tokens
 func (c *Server) removeExpiredRegistrationTokens() error {
-	c.log(LogLevelDebug, "removing expired and invalid trust registration tokens", nil)
+	c.log(LogLevelDebug, "Removing expired and invalid trust registration tokens", nil)
 	expired := []string{}
 	list, err := c.store.GetRegistrationTokens([]string{})
 	if err != nil {
 		return err
 	}
 	for _, token := range list {
-		if token.ExpiresAt <= time.Now().Unix() {
-			expired = append(expired, token.Token)
-		} else if err := token.Validate(); err != nil && token.Token != "" {
+		if err := token.Validate(); err != nil && token.Token != "" {
+			c.log(LogLevelDebug, fmt.Sprintf("Removing invalid token: %v", err), nil)
 			expired = append(expired, token.Token)
 		}
-	}
-	if len(expired) > 0 {
-		c.log(LogLevelDebug, fmt.Sprintf("removing the following trust registration tokens: %v", expired), nil)
 	}
 
 	return c.store.DeleteRegistrationTokens(expired)
@@ -179,12 +185,15 @@ func (c *Server) refreshAllTrusts() error {
 		if err := trust.Validate(); err == nil && !trust.Disabled {
 			jwk, err := c.fetchJWK(trust.URL, trust.KeyID)
 			if err != nil {
+				c.log(LogLevelError, fmt.Sprintf("Failed to fetch JWKS from %s", trust.URL), err)
 				continue
 			} else if jwk == nil {
-				c.log(LogLevelWarn, fmt.Sprintf("failed to find kid: %q JWKS from %s", trust.KeyID, trust.URL), nil)
+				c.log(LogLevelWarn, fmt.Sprintf("Failed to find kid: %q JWKS from %s", trust.KeyID, trust.URL), nil)
 				continue
 			}
 			newJWKS.Keys = append(newJWKS.Keys, jwk)
+		} else {
+			c.log(LogLevelWarn, fmt.Sprintf("failed to validate trust %v", trust), err)
 		}
 	}
 	c.trustJWKS = newJWKS
@@ -193,32 +202,43 @@ func (c *Server) refreshAllTrusts() error {
 
 // refreshes a single trust
 func (c *Server) refreshTrust(keyID string) error {
+	c.log(LogLevelDebug, fmt.Sprintf("Refreshing trust for key ID %s", keyID), nil)
+
 	trusts, err := c.store.GetTrusts([]string{keyID})
 	if err != nil {
+		c.log(LogLevelError, fmt.Sprintf("Failed to find trust for key ID %s", keyID), err)
 		return err
 	} else if len(trusts) == 0 {
-		return fmt.Errorf("failed to find kid: %q in trust store", keyID)
+		err := fmt.Errorf("Failed to find kid: %q in trust store", keyID)
+		c.log(LogLevelError, fmt.Sprintf("No trusts matching key ID %s found", keyID), err)
+		return err
 	}
 
 	trust := trusts[0]
 	if err := trust.Validate(); err != nil {
+		c.log(LogLevelError, "Invalid trust", err)
 		return err
 	}
 
 	jwk, err := c.fetchJWK(trust.URL, trust.KeyID)
 	if err != nil {
+		c.log(LogLevelError, "Failed to fetch JWK", err)
 		return err
+	} else if jwk == nil {
+		return nil
 	}
 
-	newJWKS := &JSONWebKeySet{Keys: []*JSONWebKey{}}
+	// create a new JWKS with the updated JWK in it
+	keys := []*JSONWebKey{jwk}
+
+	// add all keys not matching the updated one back
 	for _, key := range c.trustJWKS.Keys {
-		if jwk.Kid == keyID {
-			newJWKS.Keys = append(newJWKS.Keys, jwk)
-		} else {
-			newJWKS.Keys = append(newJWKS.Keys, key)
+		if jwk.Kid != keyID {
+			keys = append(keys, key)
 		}
 	}
-	c.trustJWKS = newJWKS
+
+	c.trustJWKS = &JSONWebKeySet{Keys: keys}
 	return nil
 }
 
@@ -226,13 +246,13 @@ func (c *Server) refreshTrust(keyID string) error {
 func (c *Server) fetchJWK(url, keyID string) (*JSONWebKey, error) {
 	resp, err := c.httpClient.Get(url)
 	if err != nil {
-		c.log(LogLevelError, fmt.Sprintf("failed to get JWKS from %s", url), err)
+		c.log(LogLevelError, fmt.Sprintf("Failed to get JWKS from %s", url), err)
 		return nil, err
 	}
 
 	var jwks JSONWebKeySet
 	if err := json.NewDecoder(resp.Body).Decode(&jwks); err != nil {
-		c.log(LogLevelError, fmt.Sprintf("failed to decode JWKS from %s", url), err)
+		c.log(LogLevelError, fmt.Sprintf("Failed to decode JWKS from %s", url), err)
 		return nil, err
 	}
 
@@ -246,15 +266,12 @@ func (c *Server) HandleIssueRegistrationToken(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// validate the token was issued by a trusted source
-	authHeader := r.Header.Get("Authorization")
-	parts := strings.Split(authHeader, "Bearer")
-	if len(parts) != 2 {
-		w.WriteHeader(http.StatusUnauthorized)
-		return
+	// get the token from the request
+	tokenString, err := GetJwtFromRequest(r, c.jwtCookieName)
+	if err != nil {
+		c.log(LogLevelError, "Failed to extract JWT from request", err)
 	}
 
-	tokenString := strings.TrimSpace(parts[1])
 	token, err := c.Verify(tokenString)
 	if err != nil || token == nil || !token.Valid {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -277,7 +294,7 @@ func (c *Server) HandleIssueRegistrationToken(w http.ResponseWriter, r *http.Req
 
 // HandleRegister handles a registration request
 func (c *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
-	c.log(LogLevelDebug, "trust registration request recieved", nil)
+	c.log(LogLevelDebug, "Trust registration request recieved", nil)
 	if err := c.Init(); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
@@ -286,13 +303,13 @@ func (c *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	// decode and validate the request
 	var request types.RegistrationRequest
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		c.log(LogLevelError, "failed to decode the trust registration request", err)
+		c.log(LogLevelError, "Failed to decode the trust registration request", err)
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
 	if err := request.Validate(); err != nil {
-		c.log(LogLevelError, "trust registration request validation failed", err)
+		c.log(LogLevelError, "Trust registration request validation failed", err)
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte(err.Error()))
 		return
@@ -300,7 +317,7 @@ func (c *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 
 	// remove expired tokens before looking for the requested token
 	if err := c.removeExpiredRegistrationTokens(); err != nil {
-		c.log(LogLevelError, "remove expired trust registration tokens failed", err)
+		c.log(LogLevelError, "Remove expired trust registration tokens failed", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -308,7 +325,7 @@ func (c *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	// get the registration token from the newly cleaned store
 	tokens, err := c.store.GetRegistrationTokens([]string{request.Token})
 	if err != nil || len(tokens) == 0 {
-		c.log(LogLevelError, "failed to get trust registration token", err)
+		c.log(LogLevelError, "Failed to get trust registration token", err)
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
@@ -321,14 +338,14 @@ func (c *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := c.store.PutTrust(trust); err != nil {
-		c.log(LogLevelError, "failed to save trust to store", err)
+		c.log(LogLevelError, "Failed to save trust to store", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
 	// remove the registration token
 	if err := c.store.DeleteRegistrationTokens([]string{request.Token}); err != nil {
-		c.log(LogLevelError, "failed to remove the trust request token", err)
+		c.log(LogLevelError, "Failed to remove the trust request token", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -337,7 +354,7 @@ func (c *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 
 	// attempt to update the trust cache
 	if err := c.refreshTrust(request.KeyID); err != nil {
-		c.log(LogLevelWarn, "failed to refresh JWKS cache", err)
+		c.log(LogLevelWarn, "Failed to refresh JWKS cache", err)
 	}
 
 	w.WriteHeader(http.StatusOK)

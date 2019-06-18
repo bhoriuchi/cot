@@ -12,3 +12,4 @@
 *.out
 cot
 trust.yaml
+*.db

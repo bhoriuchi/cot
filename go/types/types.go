@@ -26,7 +26,7 @@ type RegistrationToken struct {
 func (c *RegistrationToken) Validate() error {
 	if c.Token == "" {
 		return ErrInvalidRegistrationToken
-	} else if c.ExpiresAt > time.Now().Unix() {
+	} else if time.Now().Unix() >= c.ExpiresAt {
 		return ErrExpiredRegistrationToken
 	}
 	return nil

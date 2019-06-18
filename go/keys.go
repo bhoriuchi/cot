@@ -14,10 +14,10 @@ const DefaultBitSize = 2048
 // GenerateRSAKeyPair generates a key pair
 func GenerateRSAKeyPair(keySize ...int) ([]byte, []byte, error) {
 	bitSize := DefaultBitSize
-	if len(keySize) > 0 {
+	if len(keySize) > 0 && keySize[0] > 0 {
 		bitSize = keySize[0]
 	}
-	if bitSize%1024 != 0 {
+	if bitSize%1024 != 0 || bitSize == 0 {
 		return nil, nil, fmt.Errorf("key size must be a multiple of 1024")
 	}
 
