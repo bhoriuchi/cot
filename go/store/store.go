@@ -24,10 +24,6 @@ type Store interface {
 	DeleteRegistrationTokens(ids []string) error
 	GetRegistrationTokens(ids []string) ([]*types.RegistrationToken, error)
 
-	// client
-	PutTrustClientConfig(key, value string) error
-	GetTrustClientConfig(key string) (string, bool, error)
-
 	// keypairs
 	PutKeyPair(pair *types.KeyPair) error
 	DeleteKeyPairs(id []string) error

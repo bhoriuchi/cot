@@ -15,6 +15,7 @@ import (
 )
 
 var addr string
+var rpcAddr string
 var signedData string
 var storeFile string
 var regToken string
@@ -30,7 +31,8 @@ var registerCmd = &cobra.Command{
 		store := boltdb.NewStore(&boltdb.Options{Database: storeFile})
 		client := cot.NewClient(&cot.ClientOptions{
 			Store:   store,
-			JwksURL: fmt.Sprintf("http://localhost%s/certs", addr),
+			RPCAddr: rpcAddr,
+			CLIMode: true,
 			LogFunc: logFunc,
 		})
 
@@ -48,7 +50,8 @@ var signCmd = &cobra.Command{
 		store := boltdb.NewStore(&boltdb.Options{Database: storeFile})
 		client := cot.NewClient(&cot.ClientOptions{
 			Store:   store,
-			JwksURL: fmt.Sprintf("http://localhost%s/certs", addr),
+			RPCAddr: rpcAddr,
+			CLIMode: true,
 			LogFunc: logFunc,
 		})
 
@@ -65,6 +68,9 @@ var issueCmd = &cobra.Command{
 	Use: "issue",
 	Run: func(cmd *cobra.Command, args []string) {
 		store := boltdb.NewStore(&boltdb.Options{Database: storeFile})
+		if err := store.WithLogFunc(logFunc).Init(); err != nil {
+			log.Fatalln(err)
+		}
 		server := cot.NewServer(&cot.ServerOptions{
 			Store:   store,
 			LogFunc: logFunc,
@@ -87,10 +93,13 @@ var trustCmd = &cobra.Command{
 	Use: "trust",
 	Run: func(cmd *cobra.Command, args []string) {
 		store := boltdb.NewStore(&boltdb.Options{Database: storeFile})
+		if err := store.WithLogFunc(logFunc).Init(); err != nil {
+			log.Fatalln(err)
+		}
 
 		if clientMode {
 			client := cot.NewClient(&cot.ClientOptions{
-				JwksURL: fmt.Sprintf("http://localhost%s/certs", addr),
+				RPCAddr: rpcAddr,
 				Store:   store,
 				LogFunc: logFunc,
 			})
@@ -123,6 +132,9 @@ var trustCmd = &cobra.Command{
 				case http.MethodGet:
 					server.HandleIssueRegistrationToken(w, r)
 					return
+				case http.MethodDelete:
+					server.HandleBreak(w, r)
+					return
 				case http.MethodPost:
 					server.HandleRegister(w, r)
 					return
@@ -141,7 +153,7 @@ var trustCmd = &cobra.Command{
 			})
 		}
 
-		log.Printf("Starting on %s - client: %t, server: %t", addr, clientMode, serverMode)
+		log.Printf("Starting trust server on %s - client: %t, server: %t", addr, clientMode, serverMode)
 		log.Fatalln(http.ListenAndServe(addr, nil))
 	},
 }
@@ -194,6 +206,7 @@ func handleGetResource(server *cot.Server, w http.ResponseWriter, r *http.Reques
 func main() {
 	rootCmd.PersistentFlags().StringVarP(&storeFile, "store", "f", "", "store file")
 	rootCmd.PersistentFlags().StringVarP(&addr, "addr", "a", ":3000", "address to run on")
+	rootCmd.PersistentFlags().StringVarP(&rpcAddr, "rpc-addr", "r", ":3001", "address to run rpc on")
 
 	registerCmd.PersistentFlags().StringVarP(&regAddr, "url", "u", "", "registration url")
 	registerCmd.PersistentFlags().StringVarP(&regToken, "token", "t", "", "registration token")

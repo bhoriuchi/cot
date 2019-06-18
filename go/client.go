@@ -6,14 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
-	"net/url"
+	"net/rpc"
 	"time"
 
 	"github.com/bhoriuchi/cot/go/store"
 	"github.com/bhoriuchi/cot/go/types"
 	"github.com/dgrijalva/jwt-go"
-	"github.com/google/uuid"
 )
 
 // constants
@@ -21,15 +21,53 @@ const (
 	DefaultHTTPRequestTimeout = 30
 	DefaultJwtTTL             = 60   // 1 minute
 	MaxJwtTTL                 = 1800 // 30 minutes, maximum time a Jwt can live. Not configurable
-	ClientKeyPairID           = "client_keypair_id"
 )
 
 // Errors
 var (
-	ErrInvalidClientJwksURL = errors.New("Invalid client JWKS URL")
-	ErrNoClientStore        = errors.New("No client store configured")
-	ErrNoClientKeyPair      = errors.New("No client key pair found in the store")
+	ErrNoClientStore   = errors.New("No client store configured")
+	ErrNoClientKeyPair = errors.New("No client key pair found in the store")
 )
+
+// ClientRPC a client rpc
+type ClientRPC struct {
+	client *Client
+}
+
+// GetJWK get the jwk
+func (c *ClientRPC) GetJWK(args *string, reply *JSONWebKey) error {
+	c.client.log(LogLevelDebug, fmt.Sprintf("RPC request for trust client jwk with key ID %s", *args), nil)
+	jwks, err := generateJWKS(c.client.store, c.client.log, c.client.additionalJWK)
+	if err != nil {
+		return err
+	}
+	jwk := jwks.GetKey(*args)
+	*reply = *jwk
+	return nil
+}
+
+func (c *ClientRPC) run() error {
+	c.client.log(LogLevelDebug, fmt.Sprintf("Starting trust client RPC on %s", c.client.rpcAddr), nil)
+	handler := rpc.NewServer()
+	handler.Register(c)
+	ln, err := net.Listen("tcp", c.client.rpcAddr)
+	if err != nil {
+		c.client.log(LogLevelError, "Failed to create listener", err)
+		return err
+	}
+	go func() {
+		for {
+			cxn, err := ln.Accept()
+			if err != nil {
+				c.client.log(LogLevelError, "Failed to accept connection", err)
+				return
+			}
+			go handler.ServeConn(cxn)
+		}
+	}()
+	c.client.log(LogLevelDebug, fmt.Sprintf("SUCCESS! Started trust client RPC on %s", c.client.rpcAddr), nil)
+	return nil
+}
 
 // NewClient creates a new client
 func NewClient(opts *ClientOptions) *Client {
@@ -48,7 +86,8 @@ func NewClient(opts *ClientOptions) *Client {
 	}
 
 	return &Client{
-		jwksURL: o.JwksURL,
+		cliMode: o.CLIMode,
+		rpcAddr: o.RPCAddr,
 		store:   o.Store,
 		keySize: o.KeySize,
 		httpClient: &http.Client{
@@ -64,7 +103,8 @@ func NewClient(opts *ClientOptions) *Client {
 
 // ClientOptions options for the client
 type ClientOptions struct {
-	JwksURL           string
+	CLIMode           bool
+	RPCAddr           string
 	Store             store.Store
 	KeySize           int
 	RequestTimeout    int
@@ -75,27 +115,16 @@ type ClientOptions struct {
 
 // Client a cot client
 type Client struct {
+	cliMode       bool
+	rpcAddr       string
+	clientRPC     *ClientRPC
 	initialized   bool
-	jwksURL       string
 	keySize       int
 	httpClient    *http.Client
 	store         store.Store
 	clientKeyPair *types.KeyPair
 	log           func(level, message string, err error)
 	additionalJWK func() []*JSONWebKey
-}
-
-// check if the client key pair has been
-func (c *Client) getClientKeyPair() (*types.KeyPair, error) {
-	keyPairs, err := c.store.GetKeyPairs([]string{ClientKeyPairID})
-	if err != nil {
-		c.log(LogLevelError, "Failed to get trust client key pair", err)
-		return nil, err
-	} else if len(keyPairs) == 1 {
-		return keyPairs[0], nil
-	}
-	c.log(LogLevelError, "Failed to get trust client key pair", ErrNoClientKeyPair)
-	return nil, ErrNoClientKeyPair
 }
 
 // Init initializes a client
@@ -107,9 +136,9 @@ func (c *Client) Init() error {
 	c.log(LogLevelDebug, "Initializing the trust client", nil)
 
 	// validate the client options
-	if _, err := url.Parse(c.jwksURL); err != nil || c.jwksURL == "" {
-		c.log(LogLevelError, "Invalid JWKS url", ErrInvalidClientJwksURL)
-		return ErrInvalidClientJwksURL
+	if c.rpcAddr == "" {
+		c.log(LogLevelError, "Invalid trust client RPC address", types.ErrInvalidAddress)
+		return types.ErrInvalidAddress
 	} else if c.store == nil {
 		c.log(LogLevelError, "No store provided", ErrNoClientStore)
 		return ErrNoClientStore
@@ -121,74 +150,26 @@ func (c *Client) Init() error {
 		return err
 	}
 
-	c.log(LogLevelDebug, "Retrieving the trust client key id", nil)
-	clientKeyID, ok, err := c.store.GetTrustClientConfig(ClientKeyPairID)
+	// ensure a client key pair
+	keyPair, err := ensureKeyPair(c.store, c.log, ClientKeyPairSubject, c.keySize, false)
 	if err != nil {
-		c.log(LogLevelError, "Failed to get trust client config", err)
+		c.log(LogLevelError, "Failed to ensure trust client key pair", err)
 		return err
 	}
-	if !ok {
-		// if no id, create a new one and store it
-		c.log(LogLevelDebug, "Generating a new trust client key id", nil)
-		clientKeyID = uuid.New().String()
-		if err := c.store.PutTrustClientConfig(ClientKeyPairID, clientKeyID); err != nil {
-			c.log(LogLevelError, "Failed to put trust client config", err)
-			return err
-		}
 
-		c.log(LogLevelDebug, "Generating a new trust client key pair", nil)
-		clientKeyPair, err := c.newKeyPair(clientKeyID)
-		if err != nil {
-			c.log(LogLevelError, "Failed to generate a new trust client key pair", err)
+	// start the rpc server
+	if !c.cliMode {
+		c.clientRPC = &ClientRPC{client: c}
+		if err := c.clientRPC.run(); err != nil {
+			c.log(LogLevelError, "Failed to start trust client RPC server", err)
 			return err
-		}
-		c.clientKeyPair = clientKeyPair
-	} else {
-		// if id found, check that a key pair exists, if not create one
-		c.log(LogLevelDebug, "Retrieving trust client key pair", nil)
-		pairs, err := c.store.GetKeyPairs([]string{clientKeyID})
-		if err != nil {
-			c.log(LogLevelError, "Failed to get trust client key pair", err)
-			return err
-		}
-		if len(pairs) == 1 {
-			c.clientKeyPair = pairs[0]
-		} else {
-			c.log(LogLevelDebug, "No trust client key pair found, generating a new one", nil)
-			clientKeyPair, err := c.newKeyPair(clientKeyID)
-			if err != nil {
-				c.log(LogLevelError, "Failed to generate a new trust client key pair", err)
-				return err
-			}
-			c.clientKeyPair = clientKeyPair
 		}
 	}
 
 	c.log(LogLevelDebug, "SUCCESS! Initialized the trust client", nil)
+	c.clientKeyPair = keyPair
 	c.initialized = true
 	return nil
-}
-
-// generates a new keypair and stores it with the key id
-func (c *Client) newKeyPair(keyID string) (*types.KeyPair, error) {
-	// now generate a new keypair and store it
-	privateKey, publicKey, err := GenerateRSAKeyPair(c.keySize)
-	if err != nil {
-		return nil, err
-	}
-
-	clientKeyPair := &types.KeyPair{
-		KeyID:      keyID,
-		PrivateKey: string(privateKey),
-		PublicKey:  string(publicKey),
-	}
-
-	if err := c.store.PutKeyPair(clientKeyPair); err != nil {
-		c.log(LogLevelError, "Failed to put trust client key pair", err)
-		return nil, err
-	}
-
-	return clientKeyPair, nil
 }
 
 // Register registers a client
@@ -198,9 +179,9 @@ func (c *Client) Register(uri, token string) error {
 	}
 
 	request := &types.RegistrationRequest{
-		Token: token,
-		KeyID: c.clientKeyPair.KeyID,
-		URL:   c.jwksURL,
+		Token:   token,
+		KeyID:   c.clientKeyPair.KeyID,
+		Address: c.rpcAddr,
 	}
 
 	j, err := json.Marshal(request)
@@ -249,46 +230,21 @@ func (c *Client) Sign(claims jwt.MapClaims, ttl ...int) (string, error) {
 	return SignRS256WithClaims([]byte(c.clientKeyPair.PrivateKey), claims, header)
 }
 
-// JSONWebKeySet returns the current combined JWKS
-func (c *Client) JSONWebKeySet() (*JSONWebKeySet, error) {
-	if err := c.Init(); err != nil {
-		return nil, err
-	}
-
-	kid := c.clientKeyPair.KeyID
-	publicKey, err := jwt.ParseRSAPublicKeyFromPEM([]byte(c.clientKeyPair.PublicKey))
-	if err != nil {
-		return nil, err
-	}
-
-	jwk, err := NewRS256JSONWebKey(publicKey, kid, JwkUseSig)
-	if err != nil {
-		return nil, err
-	}
-
-	keyMap := map[string]string{kid: kid}
-	jwks := &JSONWebKeySet{Keys: []*JSONWebKey{jwk}}
-
-	// add additional jwk
-	if c.additionalJWK != nil {
-		additionalJWK := c.additionalJWK()
-		if additionalJWK != nil {
-			for _, a := range additionalJWK {
-				if _, ok := keyMap[a.Kid]; !ok {
-					keyMap[a.Kid] = a.Kid
-					jwks.Keys = append(jwks.Keys, a)
-				}
-			}
-		}
-	}
-
-	return jwks, nil
+// RotateKeyPair rotates the keypair
+func (c *Client) RotateKeyPair() error {
+	_, err := ensureKeyPair(c.store, c.log, ClientKeyPairSubject, c.keySize, true)
+	return err
 }
 
 // HandleGetJWKS serves the current JWKS
 func (c *Client) HandleGetJWKS(w http.ResponseWriter, r *http.Request) {
+	if err := c.Init(); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
 	// get the JWKS
-	jwks, err := c.JSONWebKeySet()
+	jwks, err := generateJWKS(c.store, c.log, c.additionalJWK)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return

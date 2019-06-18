@@ -17,7 +17,6 @@ const (
 	DefaultRegistrationBucket = "registration"
 	DefaultKeyPairBucket      = "keypair"
 	DefaultTrustBucket        = "trust"
-	DefaultTrustClientBucket  = "trust_client"
 	LogLevelError             = "error"
 	LogLevelDebug             = "debug"
 )
@@ -28,7 +27,6 @@ type Options struct {
 	RegistrationBucket string
 	KeyPairBucket      string
 	TrustBucket        string
-	TrustClientBucket  string
 	LogFunc            func(level, message string, err error)
 }
 
@@ -36,10 +34,9 @@ type Options struct {
 type Store struct {
 	initialized        bool
 	database           string
-	registrationBucket []byte
-	keypairBucket      []byte
-	trustBucket        []byte
-	trustClientBucket  []byte
+	keypairBucket      []byte // local only bucket
+	registrationBucket []byte // peer distributed bucket
+	trustBucket        []byte // peer distributed bucket
 	log                func(level, message string, err error)
 }
 
@@ -63,9 +60,6 @@ func NewStore(opts *Options) *Store {
 	if o.TrustBucket == "" {
 		o.TrustBucket = DefaultTrustBucket
 	}
-	if o.TrustClientBucket == "" {
-		o.TrustClientBucket = DefaultTrustClientBucket
-	}
 
 	return &Store{
 		initialized:        false,
@@ -73,7 +67,6 @@ func NewStore(opts *Options) *Store {
 		registrationBucket: []byte(o.RegistrationBucket),
 		keypairBucket:      []byte(o.KeyPairBucket),
 		trustBucket:        []byte(o.TrustBucket),
-		trustClientBucket:  []byte(o.TrustClientBucket),
 		log:                o.LogFunc,
 	}
 }
@@ -110,7 +103,6 @@ func (c *Store) Init() error {
 		c.registrationBucket,
 		c.keypairBucket,
 		c.trustBucket,
-		c.trustClientBucket,
 	}
 
 	// get the absolute path for the file
@@ -264,7 +256,7 @@ func (c *Store) GetRegistrationTokens(ids []string) ([]*types.RegistrationToken,
 
 // PutKeyPair puts a keypair
 func (c *Store) PutKeyPair(keypair *types.KeyPair) error {
-	return c.put(keypair, []byte(keypair.KeyID), c.keypairBucket)
+	return c.put(keypair, []byte(keypair.Subject), c.keypairBucket)
 }
 
 // DeleteKeyPairs deletes a list of key pairs
@@ -311,33 +303,4 @@ func (c *Store) GetTrusts(ids []string) ([]*types.Trust, error) {
 		return nil, err
 	}
 	return trusts, nil
-}
-
-// PutTrustClientConfig puts a config in the trust client config bucket
-func (c *Store) PutTrustClientConfig(key, value string) error {
-	data := &TrustClientConfigData{Data: value}
-	return c.put(data, []byte(key), c.trustClientBucket)
-}
-
-// GetTrustClientConfig gets a config from the trust client config bucket
-func (c *Store) GetTrustClientConfig(key string) (string, bool, error) {
-	list, err := c.list([]string{key}, c.trustClientBucket)
-	if err != nil {
-		c.log(LogLevelError, "Failed to retrieve list from client bucket", err)
-		return "", false, err
-	}
-
-	var data []*TrustClientConfigData
-	if err := json.Unmarshal(list, &data); err != nil {
-		c.log(LogLevelError, "Trust store failed to unmarshal data from the embedded database", err)
-		return "", true, err
-	}
-
-	if len(data) == 0 {
-		c.log(LogLevelDebug, fmt.Sprintf("No trust client config found for key %q", key), nil)
-		return "", false, nil
-	}
-
-	clientConfig := data[0].Data
-	return clientConfig, true, nil
 }

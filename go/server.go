@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/rpc"
 	"time"
 
 	"github.com/bhoriuchi/cot/go/store"
@@ -13,25 +14,18 @@ import (
 	"github.com/google/uuid"
 )
 
-// Server constants
-const (
-	DefaultRequestTokenTTL = 1800
-	LogLevelDebug          = "debug"
-	LogLevelError          = "error"
-	LogLevelInfo           = "info"
-	LogLevelWarn           = "warn"
-)
-
 // Server a resource server
 type Server struct {
 	peers                map[string]string
 	initialized          bool
 	registrationTokenTTL int
+	keySize              int
 	jwtCookieName        string
 	store                store.Store
 	log                  func(level, message string, err error)
 	trustJWKS            *JSONWebKeySet
 	httpClient           *http.Client
+	serverKeyPair        *types.KeyPair
 }
 
 // ServerOptions options for server
@@ -39,6 +33,7 @@ type ServerOptions struct {
 	Insecure             bool
 	RequestTimeout       int
 	RegistrationTokenTTL int
+	KeySize              int
 	JWTCookieName        string
 	Store                store.Store
 	LogFunc              func(level, message string, err error)
@@ -67,6 +62,7 @@ func NewServer(opts *ServerOptions) *Server {
 	return &Server{
 		registrationTokenTTL: o.RegistrationTokenTTL,
 		store:                o.Store,
+		keySize:              o.KeySize,
 		jwtCookieName:        o.JWTCookieName,
 		httpClient: &http.Client{
 			Timeout: time.Duration(timeout) * time.Second,
@@ -90,12 +86,26 @@ func (c *Server) Init() error {
 		return err
 	}
 
+	keyPair, err := ensureKeyPair(c.store, c.log, ServerKeyPairSubject, c.keySize, false)
+	if err != nil {
+		c.log(LogLevelError, "Failed to ensure trust server key pair", err)
+		return err
+	}
+
 	if err := c.refreshAllTrusts(); err != nil {
 		c.log(LogLevelError, "Failed to refresh all registered server trusts", err)
 	}
 
 	c.log(LogLevelDebug, "SUCCESS! Initialized the trust server", nil)
+	c.serverKeyPair = keyPair
+	c.initialized = true
 	return nil
+}
+
+// RotateKeyPair rotates the keypair
+func (c *Server) RotateKeyPair() error {
+	_, err := ensureKeyPair(c.store, c.log, ServerKeyPairSubject, c.keySize, true)
+	return err
 }
 
 // parses the token
@@ -139,9 +149,6 @@ func (c *Server) Verify(tokenString string) (*jwt.Token, error) {
 // NewRegistrationToken issues a new registration token
 func (c *Server) NewRegistrationToken() (*types.RegistrationToken, error) {
 	c.log(LogLevelDebug, "Generating a new registration token", nil)
-	if err := c.Init(); err != nil {
-		return nil, err
-	}
 
 	token := &types.RegistrationToken{
 		Token:     uuid.New().String(),
@@ -183,12 +190,12 @@ func (c *Server) refreshAllTrusts() error {
 	newJWKS := &JSONWebKeySet{Keys: []*JSONWebKey{}}
 	for _, trust := range trusts {
 		if err := trust.Validate(); err == nil && !trust.Disabled {
-			jwk, err := c.fetchJWK(trust.URL, trust.KeyID)
+			jwk, err := c.fetchJWK(trust.Address, trust.KeyID)
 			if err != nil {
-				c.log(LogLevelError, fmt.Sprintf("Failed to fetch JWKS from %s", trust.URL), err)
+				c.log(LogLevelError, fmt.Sprintf("Failed to fetch JWKS from %s", trust.Address), err)
 				continue
 			} else if jwk == nil {
-				c.log(LogLevelWarn, fmt.Sprintf("Failed to find kid: %q JWKS from %s", trust.KeyID, trust.URL), nil)
+				c.log(LogLevelWarn, fmt.Sprintf("Failed to find kid: %q JWKS from %s", trust.KeyID, trust.Address), nil)
 				continue
 			}
 			newJWKS.Keys = append(newJWKS.Keys, jwk)
@@ -209,9 +216,8 @@ func (c *Server) refreshTrust(keyID string) error {
 		c.log(LogLevelError, fmt.Sprintf("Failed to find trust for key ID %s", keyID), err)
 		return err
 	} else if len(trusts) == 0 {
-		err := fmt.Errorf("Failed to find kid: %q in trust store", keyID)
-		c.log(LogLevelError, fmt.Sprintf("No trusts matching key ID %s found", keyID), err)
-		return err
+		c.log(LogLevelError, fmt.Sprintf("No trusts matching key ID %s found", keyID), types.ErrKeyIDNotFound)
+		return types.ErrKeyIDNotFound
 	}
 
 	trust := trusts[0]
@@ -220,7 +226,7 @@ func (c *Server) refreshTrust(keyID string) error {
 		return err
 	}
 
-	jwk, err := c.fetchJWK(trust.URL, trust.KeyID)
+	jwk, err := c.fetchJWK(trust.Address, trust.KeyID)
 	if err != nil {
 		c.log(LogLevelError, "Failed to fetch JWK", err)
 		return err
@@ -243,20 +249,20 @@ func (c *Server) refreshTrust(keyID string) error {
 }
 
 // fetches a jwk
-func (c *Server) fetchJWK(url, keyID string) (*JSONWebKey, error) {
-	resp, err := c.httpClient.Get(url)
+func (c *Server) fetchJWK(address, keyID string) (*JSONWebKey, error) {
+	jwksClient, err := rpc.Dial("tcp", address)
 	if err != nil {
-		c.log(LogLevelError, fmt.Sprintf("Failed to get JWKS from %s", url), err)
+		c.log(LogLevelError, fmt.Sprintf("Failed to connect to trust client at %s", address), err)
+		return nil, err
+	}
+	defer jwksClient.Close()
+
+	jwk := &JSONWebKey{}
+	if err := jwksClient.Call("ClientRPC.GetJWK", &keyID, jwk); err != nil {
 		return nil, err
 	}
 
-	var jwks JSONWebKeySet
-	if err := json.NewDecoder(resp.Body).Decode(&jwks); err != nil {
-		c.log(LogLevelError, fmt.Sprintf("Failed to decode JWKS from %s", url), err)
-		return nil, err
-	}
-
-	return jwks.GetKey(keyID), nil
+	return jwk, nil
 }
 
 // HandleIssueRegistrationToken handles the issuing of a registration token
@@ -270,6 +276,8 @@ func (c *Server) HandleIssueRegistrationToken(w http.ResponseWriter, r *http.Req
 	tokenString, err := GetJwtFromRequest(r, c.jwtCookieName)
 	if err != nil {
 		c.log(LogLevelError, "Failed to extract JWT from request", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
 	}
 
 	token, err := c.Verify(tokenString)
@@ -290,6 +298,50 @@ func (c *Server) HandleIssueRegistrationToken(w http.ResponseWriter, r *http.Req
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+}
+
+// HandleBreak breaks the trust
+func (c *Server) HandleBreak(w http.ResponseWriter, r *http.Request) {
+	if err := c.Init(); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	tokenString, err := GetJwtFromRequest(r, c.jwtCookieName)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	token, err := c.Verify(tokenString)
+	if err != nil {
+		if err == types.ErrKeyIDNotFound {
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(err.Error()))
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	if !token.Valid {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
+	kid, ok := token.Header["kid"]
+	if !ok {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte("No kid in token"))
+		return
+	}
+
+	if err := c.store.DeleteTrusts([]string{kid.(string)}); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
 }
 
 // HandleRegister handles a registration request
@@ -332,7 +384,7 @@ func (c *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 
 	// add the request details to the trust store
 	trust := &types.Trust{
-		URL:      request.URL,
+		Address:  request.Address,
 		KeyID:    request.KeyID,
 		Disabled: false,
 	}
@@ -358,4 +410,32 @@ func (c *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
+}
+
+// HandleGetJWKS serves the current JWKS
+func (c *Server) HandleGetJWKS(w http.ResponseWriter, r *http.Request) {
+	if err := c.Init(); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	// get the JWKS
+	jwks, err := generateJWKS(c.store, c.log, nil)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	// write the response
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(jwks); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+}
+
+// HandleNotify handles a notification of trust state update
+func (c *Server) HandleNotify(w http.ResponseWriter, r *http.Request) {
+
 }
