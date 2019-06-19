@@ -19,18 +19,18 @@ type Store interface {
 	Type() Type
 	WithLogFunc(logFunc func(level, message string, err error)) Store
 
-	// registration tokens
-	PutRegistrationToken(token *types.RegistrationToken) error
-	DeleteRegistrationTokens(ids []string) error
-	GetRegistrationTokens(ids []string) ([]*types.RegistrationToken, error)
+	// trust grant tokens
+	PutTrustGrantToken(token *types.StoredData) (string, error)
+	DeleteTrustGrantTokens(ids []string) error
+	GetTrustGrantTokens(ids []string) ([]*types.StoredData, error)
 
 	// keypairs
-	PutKeyPair(pair *types.KeyPair) error
+	PutKeyPair(pair *types.StoredData) (string, error)
 	DeleteKeyPairs(id []string) error
-	GetKeyPairs(ids []string) ([]*types.KeyPair, error)
+	GetKeyPairs(ids []string) ([]*types.StoredData, error)
 
 	// trusts
-	PutTrust(trust *types.Trust) error
+	PutTrust(trust *types.StoredData) (string, error)
 	DeleteTrusts(ids []string) error
-	GetTrusts(ids []string) ([]*types.Trust, error)
+	GetTrusts(ids []string) ([]*types.StoredData, error)
 }

@@ -5,112 +5,36 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
 
-	"github.com/bhoriuchi/cot/go/store"
-	"github.com/bhoriuchi/cot/go/types"
 	"github.com/dgrijalva/jwt-go"
-	"github.com/google/uuid"
 )
 
 // keys
 const (
+	DefaultJwtTTL          = 60   // 1 minute
+	MaxJwtTTL              = 1800 // 30 minutes, maximum time a Jwt can live. Not configurable
 	DefaultBitSize         = 2048
 	DefaultRequestTokenTTL = 1800
-	ClientKeyPairSubject   = "trust_client_key"
-	ServerKeyPairSubject   = "trust_server_key"
+	TrusteeKeyPairSubject  = "trust_trustee_key"
+	GrantorKeyPairSubject  = "trust_grantor_key"
 	LogLevelDebug          = "debug"
 	LogLevelError          = "error"
 	LogLevelInfo           = "info"
 	LogLevelWarn           = "warn"
 )
 
+// vars
 var (
-	bearerRx = regexp.MustCompile(`(?i)^(Bearer|JWT)\s+(.+)$`)
+	bearerRx           = regexp.MustCompile(`(?i)^(Bearer|JWT)\s+(.+)$`)
+	ErrNoClientStore   = errors.New("No client store configured")
+	ErrNoClientKeyPair = errors.New("No client key pair found in the store")
+	ErrNotFound        = errors.New("Not found")
 )
-
-// creates a keypair if it does not exist and returns it once it does
-func ensureKeyPair(
-	store store.Store,
-	log func(level, message string, err error),
-	keySubject string,
-	keySize int,
-	rotate bool,
-) (*types.KeyPair, error) {
-	// get the key pair for the subject
-	pairs, err := store.GetKeyPairs([]string{keySubject})
-	if err != nil {
-		return nil, err
-	}
-
-	keyID := uuid.New().String()
-	if len(pairs) > 0 {
-		if !rotate {
-			return pairs[0], nil
-		}
-		keyID = pairs[0].KeyID
-	}
-
-	// otherwise create and store a new keypair
-	privateKey, publicKey, err := GenerateRSAKeyPair(keySize)
-	if err != nil {
-		log(LogLevelError, "Failed to generate trust key pair", err)
-		return nil, err
-	}
-
-	keyPair := &types.KeyPair{
-		KeyID:      keyID,
-		Subject:    keySubject,
-		PrivateKey: string(privateKey),
-		PublicKey:  string(publicKey),
-	}
-
-	if err := store.PutKeyPair(keyPair); err != nil {
-		log(LogLevelError, "Failed to put trust client key pair", err)
-		return nil, err
-	}
-
-	return keyPair, nil
-}
-
-// create the jwks
-func generateJWKS(
-	store store.Store,
-	log func(level, message string, err error),
-	additionalJWKS func() []*JSONWebKey,
-) (*JSONWebKeySet, error) {
-	pairs, err := store.GetKeyPairs([]string{})
-	if err != nil {
-		log(LogLevelError, "Failed to get keypairs from the store", err)
-		return nil, err
-	}
-
-	keys := []*JSONWebKey{}
-	if additionalJWKS != nil {
-		keys = additionalJWKS()
-	}
-
-	for _, pair := range pairs {
-		publicKey, err := jwt.ParseRSAPublicKeyFromPEM([]byte(pair.PublicKey))
-		if err != nil {
-			log(LogLevelError, "Failed to parse public key from keypair", err)
-			return nil, err
-		}
-
-		jwk, err := NewRS256JSONWebKey(publicKey, pair.KeyID, JwkUseSig, pair.Subject)
-		if err != nil {
-			log(LogLevelError, "Failed create a new JWK", err)
-			return nil, err
-		}
-
-		keys = append(keys, jwk)
-	}
-
-	return &JSONWebKeySet{Keys: keys}, nil
-}
 
 // GenerateRSAKeyPair generates a key pair
 func GenerateRSAKeyPair(keySize ...int) ([]byte, []byte, error) {

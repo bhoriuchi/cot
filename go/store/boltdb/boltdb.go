@@ -9,35 +9,36 @@ import (
 
 	"github.com/bhoriuchi/cot/go/store"
 	"github.com/bhoriuchi/cot/go/types"
+	"github.com/google/uuid"
 	bolt "go.etcd.io/bbolt"
 )
 
 // buckets and things
 const (
-	DefaultRegistrationBucket = "registration"
-	DefaultKeyPairBucket      = "keypair"
-	DefaultTrustBucket        = "trust"
-	LogLevelError             = "error"
-	LogLevelDebug             = "debug"
+	DefaultTrustGrantBucket = "trustgrant"
+	DefaultKeyPairBucket    = "keypair"
+	DefaultTrustBucket      = "trust"
+	LogLevelError           = "error"
+	LogLevelDebug           = "debug"
 )
 
 // Options store options
 type Options struct {
-	Database           string
-	RegistrationBucket string
-	KeyPairBucket      string
-	TrustBucket        string
-	LogFunc            func(level, message string, err error)
+	Database         string
+	TrustGrantBucket string
+	KeyPairBucket    string
+	TrustBucket      string
+	LogFunc          func(level, message string, err error)
 }
 
 // Store a boltdb store for the trust
 type Store struct {
-	initialized        bool
-	database           string
-	keypairBucket      []byte // local only bucket
-	registrationBucket []byte // peer distributed bucket
-	trustBucket        []byte // peer distributed bucket
-	log                func(level, message string, err error)
+	initialized      bool
+	database         string
+	keypairBucket    []byte // local only bucket
+	trustGrantBucket []byte // peer distributed bucket
+	trustBucket      []byte // peer distributed bucket
+	log              func(level, message string, err error)
 }
 
 // TrustClientConfigData a json wrapper for putting config data
@@ -51,8 +52,8 @@ func NewStore(opts *Options) *Store {
 	if opts != nil {
 		o = opts
 	}
-	if o.RegistrationBucket == "" {
-		o.RegistrationBucket = DefaultRegistrationBucket
+	if o.TrustGrantBucket == "" {
+		o.TrustGrantBucket = DefaultTrustGrantBucket
 	}
 	if o.KeyPairBucket == "" {
 		o.KeyPairBucket = DefaultKeyPairBucket
@@ -62,12 +63,12 @@ func NewStore(opts *Options) *Store {
 	}
 
 	return &Store{
-		initialized:        false,
-		database:           o.Database,
-		registrationBucket: []byte(o.RegistrationBucket),
-		keypairBucket:      []byte(o.KeyPairBucket),
-		trustBucket:        []byte(o.TrustBucket),
-		log:                o.LogFunc,
+		initialized:      false,
+		database:         o.Database,
+		trustGrantBucket: []byte(o.TrustGrantBucket),
+		keypairBucket:    []byte(o.KeyPairBucket),
+		trustBucket:      []byte(o.TrustBucket),
+		log:              o.LogFunc,
 	}
 }
 
@@ -100,7 +101,7 @@ func (c *Store) Init() error {
 	}
 
 	buckets := [][]byte{
-		c.registrationBucket,
+		c.trustGrantBucket,
 		c.keypairBucket,
 		c.trustBucket,
 	}
@@ -143,29 +144,38 @@ func (c *Store) Init() error {
 }
 
 // put puts an item in the database
-func (c *Store) put(data interface{}, key, bucket []byte) error {
+func (c *Store) put(data *types.StoredData, bucket []byte) (string, error) {
+	if data.ID == "" {
+		data.ID = uuid.New().String()
+	}
+	key := []byte(data.ID)
+
 	if data == nil {
 		err := fmt.Errorf("No %s provied to put", bucket)
 		c.log(LogLevelError, "Trust store failed to put data", err)
-		return err
+		return data.ID, err
 	}
 	value, err := json.Marshal(data)
 	if err != nil {
 		c.log(LogLevelError, "Trust store failed to unmarshal data", err)
-		return err
+		return data.ID, err
 	}
 
 	db, err := bolt.Open(c.database, 0666, nil)
 	if err != nil {
 		c.log(LogLevelError, "Trust store failed to open embedded database", err)
-		return err
+		return data.ID, err
 	}
 	defer db.Close()
 
-	return db.Update(func(tx *bolt.Tx) error {
+	if err := db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucket)
 		return b.Put(key, value)
-	})
+	}); err != nil {
+		return data.ID, err
+	}
+
+	return data.ID, nil
 }
 
 // deletes a list of keys from the database
@@ -230,24 +240,24 @@ func (c *Store) list(ids []string, bucket []byte) ([]byte, error) {
 	return []byte(arr), nil
 }
 
-// PutRegistrationToken puts a registration token
-func (c *Store) PutRegistrationToken(token *types.RegistrationToken) error {
-	return c.put(token, []byte(token.Token), c.registrationBucket)
+// PutTrustGrantToken puts a registration token
+func (c *Store) PutTrustGrantToken(token *types.StoredData) (string, error) {
+	return c.put(token, c.trustGrantBucket)
 }
 
-// DeleteRegistrationTokens puts a registration token
-func (c *Store) DeleteRegistrationTokens(tokens []string) error {
-	return c.del(tokens, c.registrationBucket)
+// DeleteTrustGrantTokens puts a registration token
+func (c *Store) DeleteTrustGrantTokens(tokens []string) error {
+	return c.del(tokens, c.trustGrantBucket)
 }
 
-// GetRegistrationTokens gets all the registration tokens
-func (c *Store) GetRegistrationTokens(ids []string) ([]*types.RegistrationToken, error) {
-	list, err := c.list(ids, c.registrationBucket)
+// GetTrustGrantTokens gets all the registration tokens
+func (c *Store) GetTrustGrantTokens(ids []string) ([]*types.StoredData, error) {
+	list, err := c.list(ids, c.trustGrantBucket)
 	if err != nil {
 		return nil, err
 	}
 
-	var tokens []*types.RegistrationToken
+	var tokens []*types.StoredData
 	if err := json.Unmarshal(list, &tokens); err != nil {
 		return nil, err
 	}
@@ -255,8 +265,8 @@ func (c *Store) GetRegistrationTokens(ids []string) ([]*types.RegistrationToken,
 }
 
 // PutKeyPair puts a keypair
-func (c *Store) PutKeyPair(keypair *types.KeyPair) error {
-	return c.put(keypair, []byte(keypair.Subject), c.keypairBucket)
+func (c *Store) PutKeyPair(keypair *types.StoredData) (string, error) {
+	return c.put(keypair, c.keypairBucket)
 }
 
 // DeleteKeyPairs deletes a list of key pairs
@@ -265,13 +275,13 @@ func (c *Store) DeleteKeyPairs(ids []string) error {
 }
 
 // GetKeyPairs gets all keypairs
-func (c *Store) GetKeyPairs(ids []string) ([]*types.KeyPair, error) {
+func (c *Store) GetKeyPairs(ids []string) ([]*types.StoredData, error) {
 	list, err := c.list(ids, c.keypairBucket)
 	if err != nil {
 		return nil, err
 	}
 
-	var keypairs []*types.KeyPair
+	var keypairs []*types.StoredData
 	if err := json.Unmarshal(list, &keypairs); err != nil {
 		c.log(LogLevelError, "Trust store failed to unmarshal data from the embedded database", err)
 		return nil, err
@@ -280,8 +290,8 @@ func (c *Store) GetKeyPairs(ids []string) ([]*types.KeyPair, error) {
 }
 
 // PutTrust puts a trust
-func (c *Store) PutTrust(trust *types.Trust) error {
-	return c.put(trust, []byte(trust.KeyID), c.trustBucket)
+func (c *Store) PutTrust(trust *types.StoredData) (string, error) {
+	return c.put(trust, c.trustBucket)
 }
 
 // DeleteTrusts deletes a list of trusts
@@ -290,14 +300,14 @@ func (c *Store) DeleteTrusts(ids []string) error {
 }
 
 // GetTrusts gets all the trusts
-func (c *Store) GetTrusts(ids []string) ([]*types.Trust, error) {
+func (c *Store) GetTrusts(ids []string) ([]*types.StoredData, error) {
 	list, err := c.list(ids, c.trustBucket)
 	if err != nil {
 		c.log(LogLevelError, "Trust failed to list trusts", err)
 		return nil, err
 	}
 
-	var trusts []*types.Trust
+	var trusts []*types.StoredData
 	if err := json.Unmarshal(list, &trusts); err != nil {
 		c.log(LogLevelError, "Trust store failed to unmarshal data from the embedded database", err)
 		return nil, err
