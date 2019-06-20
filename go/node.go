@@ -185,6 +185,21 @@ func (c *Node) ensureKeyPair(keySubject string, rotate bool) (*types.KeyPair, er
 	return keyPair, nil
 }
 
+// ListTrusts lists all trusts
+func (c *Node) ListTrusts() ([]*types.Trust, error) {
+	return c.getTrusts([]string{})
+}
+
+// ListKeyPairs lists all trusts
+func (c *Node) ListKeyPairs() ([]*types.KeyPair, error) {
+	return c.getKeyPairs([]string{})
+}
+
+// ListTrustGrantTokens lists all trusts
+func (c *Node) ListTrustGrantTokens() ([]*types.TrustGrantToken, error) {
+	return c.getTrustGrantTokens([]string{})
+}
+
 // NotifyPeers let peers know of a trust update
 func (c *Node) NotifyPeers() {
 

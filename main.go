@@ -15,6 +15,7 @@ import (
 )
 
 var addr string
+var encKey string
 var rpcAddr string
 var signedData string
 var storeFile string
@@ -25,15 +26,107 @@ var clientMode bool
 
 var rootCmd = &cobra.Command{}
 
+var listCmd = &cobra.Command{
+	Use: "list",
+}
+
+var listTrustCmd = &cobra.Command{
+	Use: "trust",
+	Run: func(cmd *cobra.Command, args []string) {
+		store := boltdb.NewStore(&boltdb.Options{Database: storeFile})
+		node := cot.NewNode(&cot.NodeOptions{
+			CLIMode:       true,
+			EncryptionKey: encKey,
+			Store:         store,
+			LogFunc:       logFunc,
+		})
+
+		if err := node.Serve(); err != nil {
+			log.Fatalln(fmt.Sprintf("FATAL: %v", err))
+		}
+
+		list, err := node.ListTrusts()
+		if err != nil {
+			log.Fatalln(fmt.Sprintf("FATAL: %v", err))
+		}
+
+		j, err := json.MarshalIndent(list, "", "  ")
+		if err != nil {
+			log.Fatalln(fmt.Sprintf("FATAL: %v", err))
+		}
+
+		log.Printf("%s\n", j)
+	},
+}
+
+var listKeyPairCmd = &cobra.Command{
+	Use: "keypair",
+	Run: func(cmd *cobra.Command, args []string) {
+		store := boltdb.NewStore(&boltdb.Options{Database: storeFile})
+		node := cot.NewNode(&cot.NodeOptions{
+			CLIMode:       true,
+			EncryptionKey: encKey,
+			Store:         store,
+			LogFunc:       logFunc,
+		})
+
+		if err := node.Serve(); err != nil {
+			log.Fatalln(fmt.Sprintf("FATAL: %v", err))
+		}
+
+		list, err := node.ListKeyPairs()
+		if err != nil {
+			log.Fatalln(fmt.Sprintf("FATAL: %v", err))
+		}
+
+		j, err := json.MarshalIndent(list, "", "  ")
+		if err != nil {
+			log.Fatalln(fmt.Sprintf("FATAL: %v", err))
+		}
+
+		log.Printf("%s\n", j)
+	},
+}
+
+var listGrantTokenCmd = &cobra.Command{
+	Use: "token",
+	Run: func(cmd *cobra.Command, args []string) {
+		store := boltdb.NewStore(&boltdb.Options{Database: storeFile})
+		node := cot.NewNode(&cot.NodeOptions{
+			CLIMode:       true,
+			EncryptionKey: encKey,
+			Store:         store,
+			LogFunc:       logFunc,
+		})
+
+		if err := node.Serve(); err != nil {
+			log.Fatalln(fmt.Sprintf("FATAL: %v", err))
+		}
+
+		list, err := node.ListTrustGrantTokens()
+		if err != nil {
+			log.Fatalln(fmt.Sprintf("FATAL: %v", err))
+		}
+
+		j, err := json.MarshalIndent(list, "", "  ")
+		if err != nil {
+			log.Fatalln(fmt.Sprintf("FATAL: %v", err))
+		}
+
+		log.Printf("%s\n", j)
+	},
+}
+
 var registerCmd = &cobra.Command{
 	Use: "register",
 	Run: func(cmd *cobra.Command, args []string) {
 		store := boltdb.NewStore(&boltdb.Options{Database: storeFile})
 		node := cot.NewNode(&cot.NodeOptions{
-			CLIMode: true,
-			RPCAddr: rpcAddr,
-			Store:   store,
-			LogFunc: logFunc,
+			CLIMode:       true,
+			EncryptionKey: encKey,
+			RPCAddr:       rpcAddr,
+			Store:         store,
+			LogFunc:       logFunc,
 		})
 
 		if err := node.Serve(); err != nil {
@@ -53,9 +146,10 @@ var signCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		store := boltdb.NewStore(&boltdb.Options{Database: storeFile})
 		node := cot.NewNode(&cot.NodeOptions{
-			CLIMode: true,
-			Store:   store,
-			LogFunc: logFunc,
+			CLIMode:       true,
+			EncryptionKey: encKey,
+			Store:         store,
+			LogFunc:       logFunc,
 		})
 
 		if err := node.Serve(); err != nil {
@@ -76,9 +170,10 @@ var issueCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		store := boltdb.NewStore(&boltdb.Options{Database: storeFile})
 		node := cot.NewNode(&cot.NodeOptions{
-			CLIMode: true,
-			Store:   store,
-			LogFunc: logFunc,
+			CLIMode:       true,
+			EncryptionKey: encKey,
+			Store:         store,
+			LogFunc:       logFunc,
 		})
 
 		if err := node.Serve(); err != nil {
@@ -105,9 +200,10 @@ var trustCmd = &cobra.Command{
 		log.Printf("Serving Trust on %s\n", rpcAddr)
 		store := boltdb.NewStore(&boltdb.Options{Database: storeFile})
 		node := cot.NewNode(&cot.NodeOptions{
-			RPCAddr: rpcAddr,
-			Store:   store,
-			LogFunc: logFunc,
+			RPCAddr:       rpcAddr,
+			EncryptionKey: encKey,
+			Store:         store,
+			LogFunc:       logFunc,
 		})
 
 		if err := node.Serve(); err != nil {
@@ -176,6 +272,7 @@ func handleGetResource(node *cot.Node, w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	rootCmd.PersistentFlags().StringVarP(&storeFile, "store", "f", "", "store file")
+	rootCmd.PersistentFlags().StringVarP(&encKey, "encryption-key", "k", "", "encryption key")
 	rootCmd.PersistentFlags().StringVarP(&addr, "addr", "a", ":3000", "address to run on")
 	rootCmd.PersistentFlags().StringVarP(&rpcAddr, "rpc-addr", "r", ":3001", "address to run rpc on")
 
@@ -184,6 +281,11 @@ func main() {
 
 	signCmd.PersistentFlags().StringVarP(&signedData, "data", "d", "", "data to sign")
 
+	listCmd.AddCommand(listTrustCmd)
+	listCmd.AddCommand(listKeyPairCmd)
+	listCmd.AddCommand(listGrantTokenCmd)
+
+	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(trustCmd)
 	rootCmd.AddCommand(issueCmd)
 	rootCmd.AddCommand(registerCmd)
