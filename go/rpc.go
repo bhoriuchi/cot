@@ -123,6 +123,7 @@ func (c *NodeRPCServer) GetJWK(keyID *string, reply *JSONWebKey) error {
 }
 
 // IssueGrantToken issues a grant token
+// the token is automatically assigned the same issuer as the requesting token
 func (c *NodeRPCServer) IssueGrantToken(tokenString *string, reply *types.TrustGrantToken) error {
 	token, err := c.node.Verify(*tokenString)
 	if err != nil {
