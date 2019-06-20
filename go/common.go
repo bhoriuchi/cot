@@ -16,19 +16,28 @@ import (
 
 // keys
 const (
-	DefaultJwtTTL          = 60   // 1 minute
-	MaxJwtTTL              = 1800 // 30 minutes, maximum time a Jwt can live. Not configurable
-	DefaultBitSize         = 2048
-	DefaultRequestTokenTTL = 1800
-	TrusteeKeyPairSubject  = "trust_trustee_key"
-	GrantorKeyPairSubject  = "trust_grantor_key"
-	LogLevelDebug          = "debug"
-	LogLevelError          = "error"
-	LogLevelInfo           = "info"
-	LogLevelWarn           = "warn"
-	JwtIssuerClaim         = "iss"
-	JwtExpiresAtClaim      = "exp"
-	JwtKeyIDHeader         = "kid"
+	DefaultJwtTTL             = 60   // 1 minute
+	NotificationTTL           = 600  // 10 minutes
+	MaxJwtTTL                 = 1800 // 30 minutes, maximum time a Jwt can live. Not configurable
+	DefaultBitSize            = 2048
+	DefaultRequestTokenTTL    = 1800
+	LogLevelDebug             = "debug"
+	LogLevelError             = "error"
+	LogLevelInfo              = "info"
+	LogLevelWarn              = "warn"
+	JwtIssuerClaim            = "iss"
+	JwtExpiresAtClaim         = "exp"
+	JwtKeyIDHeader            = "kid"
+	TopicTrustChange          = "trust_change"
+	TopicKeyPairChange        = "key_pair_change"
+	TopicGrantTokenChange     = "grant_token_change"
+	EventTrustPut             = "trust_put"
+	EventTrustDelete          = "trust_delete"
+	EventKeyPairPut           = "keypair_put"
+	EventKeyPairDelete        = "keypair_delete"
+	EventGrantTokenPut        = "grant_token_put"
+	EventGrantTokenDelete     = "grant_token_delete"
+	EventGrantTokenBulkDelete = "grant_token_bulk_delete"
 )
 
 // vars
@@ -121,4 +130,50 @@ func GetJwtFromRequest(r *http.Request, cookieName string) (string, error) {
 	}
 
 	return "", fmt.Errorf("failed to extract token from request")
+}
+
+// ContainsString returns trust if the list contains the string
+func ContainsString(list []string, value string) bool {
+	for _, v := range list {
+		if v == value {
+			return true
+		}
+	}
+	return false
+}
+
+// UniqueStringList creates a unique list of strings
+func UniqueStringList(list []string) []string {
+	m := map[string]string{}
+	l := []string{}
+	for _, v := range list {
+		m[v] = v
+	}
+	for k := range m {
+		l = append(l, k)
+	}
+	return l
+}
+
+func splitAddr(addr string) (string, string) {
+	parts := strings.Split(addr, ":")
+	host := ""
+	port := ""
+
+	if len(parts) == 0 {
+		return host, port
+	}
+
+	switch parts[0] {
+	case "", "127.0.0.1", "localhost", "0.0.0.0":
+		host = ""
+	default:
+		host = parts[0]
+	}
+
+	if len(parts) > 1 {
+		port = parts[1]
+	}
+
+	return host, port
 }

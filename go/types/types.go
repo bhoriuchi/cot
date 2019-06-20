@@ -92,3 +92,13 @@ func (c *KeyPair) Validate() error {
 	}
 	return nil
 }
+
+// Notification an event message
+type Notification struct {
+	ID        string
+	Topic     string
+	Event     string
+	Data      string
+	Source    string
+	ExpiresAt int64
+}

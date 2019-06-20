@@ -21,7 +21,7 @@ func (c *Node) fetchJWK(trusteeAddr, keyID string) (*JSONWebKey, error) {
 	defer client.Close()
 
 	jwk := &JSONWebKey{}
-	if err := client.Call("NodeRPCServer.GetJWK", &keyID, jwk); err != nil {
+	if err := client.Call("NodeRPC.GetJWK", &keyID, jwk); err != nil {
 		c.log(LogLevelError, "failed to get JWK", err)
 		return nil, err
 	}
@@ -84,8 +84,8 @@ func (c *Node) refreshTrust(keyID string) error {
 	return nil
 }
 
-// refresh the trust cache
-func (c *Node) refreshAllTrusts() error {
+// RefreshAllTrusts refresh the trust cache
+func (c *Node) RefreshAllTrusts() error {
 	trusts, err := c.getTrusts([]string{})
 	if err != nil {
 		return err

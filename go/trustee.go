@@ -34,7 +34,7 @@ func (c *Node) RequestTrust(issuer, grantorAddr, grantToken string) error {
 	}
 
 	defer client.Close()
-	return client.Call("NodeRPCServer.GrantTrust", request, nil)
+	return client.Call("NodeRPC.GrantTrust", request, nil)
 }
 
 // BreakTrust requests a trust break
@@ -55,7 +55,7 @@ func (c *Node) BreakTrust(grantorAddr string) error {
 	}
 
 	defer client.Close()
-	return client.Call("NodeRPCServer.BreakTrust", &tokenString, nil)
+	return client.Call("NodeRPC.BreakTrust", &tokenString, nil)
 }
 
 // GenerateJWKS generates a JWKS

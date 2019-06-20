@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	cot "github.com/bhoriuchi/cot/go"
 	"github.com/dgrijalva/jwt-go"
@@ -21,9 +22,8 @@ var signedData string
 var storeFile string
 var grantToken string
 var grantorAddr string
-var serverMode bool
-var clientMode bool
 var issuer string
+var peers string
 
 var rootCmd = &cobra.Command{}
 
@@ -121,12 +121,14 @@ var listGrantTokenCmd = &cobra.Command{
 var registerCmd = &cobra.Command{
 	Use: "register",
 	Run: func(cmd *cobra.Command, args []string) {
+		peerArr := strings.Split(peers, ",")
 		store := boltdb.NewStore(&boltdb.Options{Database: storeFile})
 		node := cot.NewNode(&cot.NodeOptions{
 			CLIMode:       true,
 			EncryptionKey: encKey,
 			RPCAddr:       rpcAddr,
 			Store:         store,
+			Peers:         peerArr,
 			LogFunc:       logFunc,
 		})
 
@@ -149,11 +151,13 @@ var keyPairCmd = &cobra.Command{
 var newKeyPairCmd = &cobra.Command{
 	Use: "new",
 	Run: func(cmd *cobra.Command, args []string) {
+		peerArr := strings.Split(peers, ",")
 		store := boltdb.NewStore(&boltdb.Options{Database: storeFile})
 		node := cot.NewNode(&cot.NodeOptions{
 			CLIMode:       true,
 			EncryptionKey: encKey,
 			Store:         store,
+			Peers:         peerArr,
 			LogFunc:       logFunc,
 		})
 
@@ -173,11 +177,13 @@ var newKeyPairCmd = &cobra.Command{
 var signCmd = &cobra.Command{
 	Use: "sign",
 	Run: func(cmd *cobra.Command, args []string) {
+		peerArr := strings.Split(peers, ",")
 		store := boltdb.NewStore(&boltdb.Options{Database: storeFile})
 		node := cot.NewNode(&cot.NodeOptions{
 			CLIMode:       true,
 			EncryptionKey: encKey,
 			Store:         store,
+			Peers:         peerArr,
 			LogFunc:       logFunc,
 		})
 
@@ -200,11 +206,13 @@ var signCmd = &cobra.Command{
 var issueCmd = &cobra.Command{
 	Use: "issue",
 	Run: func(cmd *cobra.Command, args []string) {
+		peerArr := strings.Split(peers, ",")
 		store := boltdb.NewStore(&boltdb.Options{Database: storeFile})
 		node := cot.NewNode(&cot.NodeOptions{
 			CLIMode:       true,
 			EncryptionKey: encKey,
 			Store:         store,
+			Peers:         peerArr,
 			LogFunc:       logFunc,
 		})
 
@@ -229,12 +237,14 @@ var issueCmd = &cobra.Command{
 var trustCmd = &cobra.Command{
 	Use: "trust",
 	Run: func(cmd *cobra.Command, args []string) {
-		log.Printf("Serving Trust on %s\n", rpcAddr)
+		peerArr := strings.Split(peers, ",")
+
 		store := boltdb.NewStore(&boltdb.Options{Database: storeFile})
 		node := cot.NewNode(&cot.NodeOptions{
 			RPCAddr:       rpcAddr,
 			EncryptionKey: encKey,
 			Store:         store,
+			Peers:         peerArr,
 			LogFunc:       logFunc,
 		})
 
@@ -252,7 +262,7 @@ var trustCmd = &cobra.Command{
 			}
 		})
 
-		log.Printf("Starting trust server on %s - client: %t, server: %t", addr, clientMode, serverMode)
+		log.Printf("Starting trust server on %s", addr)
 		log.Fatalln(http.ListenAndServe(addr, nil))
 	},
 }
@@ -308,6 +318,7 @@ func main() {
 	rootCmd.PersistentFlags().StringVarP(&encKey, "encryption-key", "k", "", "encryption key")
 	rootCmd.PersistentFlags().StringVarP(&addr, "addr", "a", ":3000", "address to run on")
 	rootCmd.PersistentFlags().StringVarP(&rpcAddr, "rpc-addr", "r", ":3001", "address to run rpc on")
+	rootCmd.PersistentFlags().StringVarP(&peers, "peers", "p", "", "peer addresses")
 
 	registerCmd.PersistentFlags().StringVarP(&grantorAddr, "grantor", "g", "", "grantor address")
 	registerCmd.PersistentFlags().StringVarP(&grantToken, "token", "t", "", "grant token")

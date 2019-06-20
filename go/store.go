@@ -52,9 +52,9 @@ func (c *Node) prepareData(id string, data interface{}) (*types.StoredData, erro
 	}
 
 	enc, err := jose.NewEncrypter(
-		jose.A128CBC_HS256,
+		c.contentEncryption,
 		jose.Recipient{
-			Algorithm: jose.A128GCMKW,
+			Algorithm: c.keyAlgorithm,
 			Key:       []byte(c.encryptionKey),
 		},
 		nil,
@@ -193,6 +193,9 @@ func (c *Node) putKeyPair(id string, keyPair *types.KeyPair) (string, error) {
 		return id, err
 	}
 
+	j, _ := json.Marshal(data)
+
+	c.notify(c, c.NewNotification(TopicKeyPairChange, EventKeyPairPut, string(j)))
 	return id, nil
 }
 
@@ -209,6 +212,9 @@ func (c *Node) putTrust(id string, trust *types.Trust) (string, error) {
 		return id, err
 	}
 
+	j, _ := json.Marshal(data)
+
+	c.notify(c, c.NewNotification(TopicTrustChange, EventTrustPut, string(j)))
 	return id, nil
 }
 
@@ -225,6 +231,9 @@ func (c *Node) putTrustGrantToken(id string, grantToken *types.TrustGrantToken) 
 		return id, err
 	}
 
+	j, _ := json.Marshal(data)
+
+	c.notify(c, c.NewNotification(TopicGrantTokenChange, EventGrantTokenPut, string(j)))
 	return id, nil
 }
 
@@ -243,5 +252,37 @@ func (c *Node) removeInvalidTrustGrantTokens() error {
 		}
 	}
 
-	return c.store.DeleteTrustGrantTokens(expired)
+	err = c.store.DeleteTrustGrantTokens(expired)
+	if err == nil {
+		c.notify(c, c.NewNotification(TopicGrantTokenChange, EventGrantTokenBulkDelete, ""))
+	}
+
+	return err
+}
+
+// removes a trust
+func (c *Node) deleteTrust(id string) error {
+	err := c.store.DeleteTrusts([]string{id})
+	if err == nil {
+		c.notify(c, c.NewNotification(TopicTrustChange, EventTrustDelete, id))
+	}
+	return err
+}
+
+// remove grant token
+func (c *Node) deleteTrustGrantToken(id string) error {
+	err := c.store.DeleteTrustGrantTokens([]string{id})
+	if err == nil {
+		c.notify(c, c.NewNotification(TopicGrantTokenChange, EventGrantTokenDelete, id))
+	}
+	return err
+}
+
+// remove keypair
+func (c *Node) deleteKeyPair(id string) error {
+	err := c.store.DeleteKeyPairs([]string{id})
+	if err == nil {
+		c.notify(c, c.NewNotification(TopicKeyPairChange, EventKeyPairDelete, id))
+	}
+	return err
 }

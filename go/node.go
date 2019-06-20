@@ -1,14 +1,22 @@
 package cot
 
 import (
+	"fmt"
+	"net/rpc"
+	"time"
+
 	"github.com/bhoriuchi/cot/go/store"
 	"github.com/bhoriuchi/cot/go/types"
 	"github.com/dgrijalva/jwt-go"
 	"github.com/google/uuid"
+	"gopkg.in/square/go-jose.v2"
 )
 
-// Logger a logging function
-type Logger func(level, message string, err error)
+// LogFunc a logging function
+type LogFunc func(level, message string, err error)
+
+// NotifyFunc a function called to notify other nodes of an update
+type NotifyFunc func(node *Node, notification *types.Notification)
 
 // Node a circle of trust node
 type Node struct {
@@ -21,11 +29,16 @@ type Node struct {
 	rpcAddr              string
 	jwtCookieName        string
 	encryptionKey        string
-	log                  Logger
+	peers                []string
+	log                  LogFunc
+	notify               NotifyFunc
 	store                store.Store
 	additionalJwkFunc    func() []*JSONWebKey
 	keyPairs             map[string]*types.KeyPair
 	trustJWKS            *JSONWebKeySet
+	contentEncryption    jose.ContentEncryption
+	keyAlgorithm         jose.KeyAlgorithm
+	notifications        map[string]int64
 }
 
 // NodeOptions options for a node
@@ -38,9 +51,13 @@ type NodeOptions struct {
 	RPCAddr              string
 	JWTCookieName        string
 	EncryptionKey        string
-	LogFunc              Logger
+	Peers                []string
+	LogFunc              LogFunc
+	NotifyFunc           NotifyFunc
 	Store                store.Store
 	AdditionalJWKFunc    func() []*JSONWebKey
+	ContentEncryption    jose.ContentEncryption
+	KeyAlgorithm         jose.KeyAlgorithm
 }
 
 // NewNode creates a new node
@@ -64,6 +81,24 @@ func NewNode(opts *NodeOptions) *Node {
 		}
 	}
 
+	if o.NotifyFunc == nil {
+		o.NotifyFunc = func(node *Node, notification *types.Notification) {
+			// remove self from the notification by adding it as recieved
+			node.notifications[notification.ID] = notification.ExpiresAt
+
+			// notify peers
+			node.notifyPeers(notification)
+		}
+	}
+
+	if o.ContentEncryption == "" {
+		o.ContentEncryption = jose.A128CBC_HS256
+	}
+
+	if o.KeyAlgorithm == "" {
+		o.KeyAlgorithm = jose.A128GCMKW
+	}
+
 	return &Node{
 		keySize:              o.KeySize,
 		requestTimeout:       o.RequestTimeout,
@@ -74,11 +109,34 @@ func NewNode(opts *NodeOptions) *Node {
 		rpcAddr:              o.RPCAddr,
 		jwtCookieName:        o.JWTCookieName,
 		encryptionKey:        o.EncryptionKey,
+		peers:                o.Peers,
 		log:                  o.LogFunc,
+		notify:               o.NotifyFunc,
 		store:                o.Store,
 		additionalJwkFunc:    o.AdditionalJWKFunc,
 		keyPairs:             map[string]*types.KeyPair{},
 		trustJWKS:            &JSONWebKeySet{Keys: []*JSONWebKey{}},
+		contentEncryption:    o.ContentEncryption,
+		keyAlgorithm:         o.KeyAlgorithm,
+		notifications:        map[string]int64{},
+	}
+}
+
+// notifies all peers
+func (c *Node) notifyPeers(notification *types.Notification) {
+	for _, peer := range c.peers {
+		c.log(LogLevelDebug, fmt.Sprintf("notifying peer %s", peer), nil)
+		client, err := rpc.Dial("tcp", peer)
+		if err != nil {
+			c.log(LogLevelError, fmt.Sprintf("Failed to connect to peer trust node at %s", peer), err)
+			continue
+		}
+		defer client.Close()
+
+		var success bool
+		if err := client.Call("NodeRPC.OnNotify", notification, &success); err != nil {
+			c.log(LogLevelError, fmt.Sprintf("Failed to notify peer %s", peer), err)
+		}
 	}
 }
 
@@ -90,6 +148,7 @@ func (c *Node) Serve() error {
 	}
 
 	c.log(LogLevelDebug, "initializing the trust node", nil)
+	c.log(LogLevelDebug, fmt.Sprintf("peers: %v", c.peers), nil)
 
 	// validate the client options
 	if c.rpcAddr == "" && !c.cliMode {
@@ -115,31 +174,26 @@ func (c *Node) Serve() error {
 		return err
 	}
 
-	// get current key pairs
-	keyPairs, err := c.getKeyPairs([]string{})
-	if err != nil {
+	if err = c.refreshKeyPairs(); err != nil {
 		return err
 	}
-	for _, keyPair := range keyPairs {
-		c.keyPairs[keyPair.Issuer] = keyPair
-	}
+
+	c.initialized = true
 
 	// start the rpc server
 	if !c.cliMode {
-		rpcServer := &NodeRPCServer{node: c}
-		if err := rpcServer.serve(); err != nil {
+		if err := c.rpc(); err != nil {
 			c.log(LogLevelError, "failed to start trust node RPC", err)
 			return err
 		}
 	}
 
 	// refresh all trusts
-	if err := c.refreshAllTrusts(); err != nil {
+	if err := c.RefreshAllTrusts(); err != nil {
 		c.log(LogLevelError, "failed to refresh all trusts", err)
 	}
 
 	c.log(LogLevelDebug, "SUCCESS! Initialized the trust node", nil)
-	c.initialized = true
 	return nil
 }
 
@@ -147,6 +201,19 @@ func (c *Node) Serve() error {
 // if the issuer key pair exists it rotates the key pair
 func (c *Node) NewKeyPair(issuer string, rotateIfExists bool) (*types.KeyPair, error) {
 	return c.ensureKeyPair(issuer, rotateIfExists)
+}
+
+func (c *Node) refreshKeyPairs() error {
+	// get current key pairs
+	keyPairs, err := c.getKeyPairs([]string{})
+	if err != nil {
+		return err
+	}
+	c.keyPairs = map[string]*types.KeyPair{}
+	for _, keyPair := range keyPairs {
+		c.keyPairs[keyPair.Issuer] = keyPair
+	}
+	return nil
 }
 
 // creates a keypair if it does not exist and returns it once it does
@@ -239,7 +306,26 @@ func (c *Node) ListTrustGrantTokens() ([]*types.TrustGrantToken, error) {
 	return c.getTrustGrantTokens([]string{})
 }
 
-// NotifyPeers let peers know of a trust update
-func (c *Node) NotifyPeers() {
+// is a peer
+func (c *Node) isPeer(addr string) bool {
+	host, _ := splitAddr(addr)
+	for _, peer := range c.peers {
+		peerHost, _ := splitAddr(peer)
+		if peerHost == host {
+			return true
+		}
+	}
+	return false
+}
 
+// NewNotification creates a new notification
+func (c *Node) NewNotification(topic, event, data string) *types.Notification {
+	return &types.Notification{
+		ID:        uuid.New().String(),
+		Topic:     topic,
+		Event:     event,
+		Data:      data,
+		Source:    c.rpcAddr,
+		ExpiresAt: time.Now().Add(NotificationTTL * time.Second).Unix(),
+	}
 }
