@@ -26,14 +26,17 @@ const (
 	LogLevelError          = "error"
 	LogLevelInfo           = "info"
 	LogLevelWarn           = "warn"
+	JwtIssuerClaim         = "iss"
+	JwtExpiresAtClaim      = "exp"
+	JwtKeyIDHeader         = "kid"
 )
 
 // vars
 var (
 	bearerRx           = regexp.MustCompile(`(?i)^(Bearer|JWT)\s+(.+)$`)
-	ErrNoClientStore   = errors.New("No client store configured")
-	ErrNoClientKeyPair = errors.New("No client key pair found in the store")
-	ErrNotFound        = errors.New("Not found")
+	ErrNoClientStore   = errors.New("no client store configured")
+	ErrNoClientKeyPair = errors.New("no client key pair found in the store")
+	ErrNotFound        = errors.New("not found")
 )
 
 // GenerateRSAKeyPair generates a key pair

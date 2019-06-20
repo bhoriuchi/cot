@@ -20,17 +20,18 @@ const (
 
 // JSONWebKey a JSON web key
 type JSONWebKey struct {
-	Alg    string   `json:"alg,omitempty"`
-	Kty    string   `json:"kty,omitempty"`
-	Use    string   `json:"use,omitempty"`
-	X5c    []string `json:"x5c,omitempty"`
-	N      string   `json:"n,omitempty"`
-	E      string   `json:"e,omitempty"`
-	Kid    string   `json:"kid,omitempty"`
-	X5t    string   `json:"x5t,omitempty"`
-	X5t256 string   `json:"x5t#S256,omitempty"`
-	Sub    string   `json:"sub,omitempty"`
-	Aud    string   `json:"aud,omitempty"`
+	Alg      string   `json:"alg,omitempty"`
+	Kty      string   `json:"kty,omitempty"`
+	Use      string   `json:"use,omitempty"`
+	X5c      []string `json:"x5c,omitempty"`
+	N        string   `json:"n,omitempty"`
+	E        string   `json:"e,omitempty"`
+	Kid      string   `json:"kid,omitempty"`
+	X5t      string   `json:"x5t,omitempty"`
+	X5t256   string   `json:"x5t#S256,omitempty"`
+	Subject  string   `json:"sub,omitempty"`
+	Audience string   `json:"aud,omitempty"`
+	Issuer   string   `json:"iss,omitempty"`
 }
 
 // PublicKey returns the public key
@@ -72,7 +73,7 @@ func (c *JSONWebKeySet) GetKey(kid string) *JSONWebKey {
 }
 
 // NewRS256JSONWebKey creates a new RS256 JSON web key
-func NewRS256JSONWebKey(publicKey *rsa.PublicKey, kid, use, subject string) (*JSONWebKey, error) {
+func NewRS256JSONWebKey(publicKey *rsa.PublicKey, kid, use, issuer string) (*JSONWebKey, error) {
 	asn1Bytes, err := x509.MarshalPKIXPublicKey(publicKey)
 	if err != nil {
 		return nil, err
@@ -91,7 +92,7 @@ func NewRS256JSONWebKey(publicKey *rsa.PublicKey, kid, use, subject string) (*JS
 		Kid:    kid,
 		X5t:    EncodeToString(x5t[:]),
 		X5t256: EncodeToString(x5t256[:]),
-		Sub:    subject,
+		Issuer: issuer,
 	}
 
 	return jwk, nil

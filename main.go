@@ -23,6 +23,7 @@ var grantToken string
 var grantorAddr string
 var serverMode bool
 var clientMode bool
+var issuer string
 
 var rootCmd = &cobra.Command{}
 
@@ -133,9 +134,37 @@ var registerCmd = &cobra.Command{
 			log.Fatalln(fmt.Sprintf("FATAL: %v", err))
 		}
 
-		if err := node.RequestTrust(grantorAddr, grantToken); err != nil {
+		if err := node.RequestTrust(issuer, grantorAddr, grantToken); err != nil {
 			log.Fatalln(fmt.Sprintf("FATAL: %v", err))
 		}
+		log.Println("Registration SUCCESS!")
+
+	},
+}
+
+var keyPairCmd = &cobra.Command{
+	Use: "keypair",
+}
+
+var newKeyPairCmd = &cobra.Command{
+	Use: "new",
+	Run: func(cmd *cobra.Command, args []string) {
+		store := boltdb.NewStore(&boltdb.Options{Database: storeFile})
+		node := cot.NewNode(&cot.NodeOptions{
+			CLIMode:       true,
+			EncryptionKey: encKey,
+			Store:         store,
+			LogFunc:       logFunc,
+		})
+
+		if err := node.Serve(); err != nil {
+			log.Fatalln(fmt.Sprintf("FATAL: %v", err))
+		}
+
+		if _, err := node.NewKeyPair(issuer, false); err != nil {
+			log.Fatalln(fmt.Sprintf("FATAL: %v", err))
+		}
+
 		log.Println("Registration SUCCESS!")
 
 	},
@@ -156,7 +185,10 @@ var signCmd = &cobra.Command{
 			log.Fatalln(fmt.Sprintf("FATAL: %v", err))
 		}
 
-		tokenString, err := node.Sign(jwt.MapClaims{"data": signedData})
+		tokenString, err := node.Sign(jwt.MapClaims{
+			"iss":  issuer,
+			"data": signedData,
+		})
 		if err != nil {
 			log.Fatalln(fmt.Sprintf("FATAL: %v", err))
 		}
@@ -180,7 +212,7 @@ var issueCmd = &cobra.Command{
 			log.Fatalln(fmt.Sprintf("FATAL: %v", err))
 		}
 
-		token, err := node.NewGrantToken()
+		token, err := node.NewGrantToken(issuer)
 		if err != nil {
 			log.Fatalln(fmt.Sprintf("FATAL: %v", err))
 		}
@@ -272,6 +304,7 @@ func handleGetResource(node *cot.Node, w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	rootCmd.PersistentFlags().StringVarP(&storeFile, "store", "f", "", "store file")
+	rootCmd.PersistentFlags().StringVarP(&issuer, "issuer", "i", "", "issuer")
 	rootCmd.PersistentFlags().StringVarP(&encKey, "encryption-key", "k", "", "encryption key")
 	rootCmd.PersistentFlags().StringVarP(&addr, "addr", "a", ":3000", "address to run on")
 	rootCmd.PersistentFlags().StringVarP(&rpcAddr, "rpc-addr", "r", ":3001", "address to run rpc on")
@@ -281,10 +314,13 @@ func main() {
 
 	signCmd.PersistentFlags().StringVarP(&signedData, "data", "d", "", "data to sign")
 
+	keyPairCmd.AddCommand(newKeyPairCmd)
+
 	listCmd.AddCommand(listTrustCmd)
 	listCmd.AddCommand(listKeyPairCmd)
 	listCmd.AddCommand(listGrantTokenCmd)
 
+	rootCmd.AddCommand(keyPairCmd)
 	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(trustCmd)
 	rootCmd.AddCommand(issueCmd)

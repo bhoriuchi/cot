@@ -3,6 +3,7 @@ package cot
 import (
 	"github.com/bhoriuchi/cot/go/store"
 	"github.com/bhoriuchi/cot/go/types"
+	"github.com/dgrijalva/jwt-go"
 	"github.com/google/uuid"
 )
 
@@ -23,8 +24,7 @@ type Node struct {
 	log                  Logger
 	store                store.Store
 	additionalJwkFunc    func() []*JSONWebKey
-	trusteeKeyPair       *types.KeyPair
-	grantorKeyPair       *types.KeyPair
+	keyPairs             map[string]*types.KeyPair
 	trustJWKS            *JSONWebKeySet
 }
 
@@ -77,6 +77,7 @@ func NewNode(opts *NodeOptions) *Node {
 		log:                  o.LogFunc,
 		store:                o.Store,
 		additionalJwkFunc:    o.AdditionalJWKFunc,
+		keyPairs:             map[string]*types.KeyPair{},
 		trustJWKS:            &JSONWebKeySet{Keys: []*JSONWebKey{}},
 	}
 }
@@ -88,14 +89,14 @@ func (c *Node) Serve() error {
 		return nil
 	}
 
-	c.log(LogLevelDebug, "Initializing the trust node", nil)
+	c.log(LogLevelDebug, "initializing the trust node", nil)
 
 	// validate the client options
 	if c.rpcAddr == "" && !c.cliMode {
-		c.log(LogLevelError, "Invalid trust node RPC address", types.ErrInvalidAddress)
+		c.log(LogLevelError, "invalid trust node RPC address", types.ErrInvalidAddress)
 		return types.ErrInvalidAddress
 	} else if c.store == nil {
-		c.log(LogLevelError, "No store provided to trust node", ErrNoClientStore)
+		c.log(LogLevelError, "no store provided to trust node", ErrNoClientStore)
 		return ErrNoClientStore
 	}
 
@@ -104,39 +105,37 @@ func (c *Node) Serve() error {
 	// that will be storing the private keys in plain text
 	// log a warning
 	if c.store.Type() == store.StoreTypeShared && c.encryptionKey == "" {
-		c.log(LogLevelWarn, "Using a shared store with no encryption leave private keys potentially insecure", nil)
+		c.log(LogLevelWarn, "using a shared store with no encryption leave private keys potentially insecure", nil)
 	}
 
 	// initialize the store
-	c.log(LogLevelDebug, "Initializing the nodes trust store", nil)
+	c.log(LogLevelDebug, "initializing the nodes trust store", nil)
 	if err := c.store.WithLogFunc(c.log).Init(); err != nil {
-		c.log(LogLevelError, "Failed to initialize the nodes trust store", err)
+		c.log(LogLevelError, "failed to initialize the nodes trust store", err)
 		return err
 	}
 
-	// set up trustee and grantor keypairs
-	if c.trusteeKeyPair, err = c.ensureKeyPair(TrusteeKeyPairSubject, false); err != nil {
-		c.log(LogLevelError, "Failed to ensure trust trustee key pair", err)
+	// get current key pairs
+	keyPairs, err := c.getKeyPairs([]string{})
+	if err != nil {
 		return err
 	}
-
-	if c.grantorKeyPair, err = c.ensureKeyPair(GrantorKeyPairSubject, false); err != nil {
-		c.log(LogLevelError, "Failed to ensure trust grantor key pair", err)
-		return err
+	for _, keyPair := range keyPairs {
+		c.keyPairs[keyPair.Issuer] = keyPair
 	}
 
 	// start the rpc server
 	if !c.cliMode {
 		rpcServer := &NodeRPCServer{node: c}
 		if err := rpcServer.serve(); err != nil {
-			c.log(LogLevelError, "Failed to start trust node RPC", err)
+			c.log(LogLevelError, "failed to start trust node RPC", err)
 			return err
 		}
 	}
 
 	// refresh all trusts
 	if err := c.refreshAllTrusts(); err != nil {
-		c.log(LogLevelError, "Failed to refresh all trusts", err)
+		c.log(LogLevelError, "failed to refresh all trusts", err)
 	}
 
 	c.log(LogLevelDebug, "SUCCESS! Initialized the trust node", nil)
@@ -144,10 +143,16 @@ func (c *Node) Serve() error {
 	return nil
 }
 
+// NewKeyPair creates a new key pair for the issuer
+// if the issuer key pair exists it rotates the key pair
+func (c *Node) NewKeyPair(issuer string, rotateIfExists bool) (*types.KeyPair, error) {
+	return c.ensureKeyPair(issuer, rotateIfExists)
+}
+
 // creates a keypair if it does not exist and returns it once it does
-func (c *Node) ensureKeyPair(keySubject string, rotate bool) (*types.KeyPair, error) {
+func (c *Node) ensureKeyPair(issuer string, rotate bool) (*types.KeyPair, error) {
 	// get the key pair for the subject
-	keyPair, err := c.findKeyPair(keySubject)
+	keyPair, err := c.findKeyPair(issuer)
 	if err != nil && err != ErrNotFound {
 		return nil, err
 	}
@@ -166,14 +171,14 @@ func (c *Node) ensureKeyPair(keySubject string, rotate bool) (*types.KeyPair, er
 	// otherwise create and store a new keypair
 	privateKey, publicKey, err := GenerateRSAKeyPair(c.keySize)
 	if err != nil {
-		c.log(LogLevelError, "Failed to generate trust key pair", err)
+		c.log(LogLevelError, "failed to generate trust key pair", err)
 		return nil, err
 	}
 
 	keyPair = &types.KeyPair{
 		ID:         keyPairID,
 		KeyID:      keyID,
-		Subject:    keySubject,
+		Issuer:     issuer,
 		PrivateKey: string(privateKey),
 		PublicKey:  string(publicKey),
 	}
@@ -183,6 +188,40 @@ func (c *Node) ensureKeyPair(keySubject string, rotate bool) (*types.KeyPair, er
 	}
 
 	return keyPair, nil
+}
+
+// gets the key pair from the tokens issuer
+func (c *Node) validateTokenIssuer(token *jwt.Token) (*JSONWebKey, error) {
+	kid, hasKeyID := token.Header[JwtKeyIDHeader]
+	if !hasKeyID {
+		return nil, types.ErrNoKeyIDInHeader
+	}
+
+	issuer, hasIssuer := token.Claims.(jwt.MapClaims)[JwtIssuerClaim]
+	if !hasIssuer {
+		return nil, types.ErrNoIssuerInClaim
+	}
+
+	jwk := c.trustJWKS.GetKey(kid.(string))
+	if jwk == nil {
+		return nil, types.ErrKeyIDNotFound
+	}
+
+	if jwk.Issuer != issuer.(string) {
+		return nil, types.ErrBadIssuer
+	}
+
+	return jwk, nil
+}
+
+// RotateKeyPair rotates the trustee keypair
+func (c *Node) RotateKeyPair(issuer string) error {
+	keyPair, err := c.ensureKeyPair(issuer, true)
+	if err != nil {
+		return err
+	}
+	c.keyPairs[issuer] = keyPair
+	return nil
 }
 
 // ListTrusts lists all trusts

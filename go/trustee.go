@@ -9,24 +9,21 @@ import (
 	"github.com/dgrijalva/jwt-go"
 )
 
-// RotateTrusteeKeyPair rotates the trustee keypair
-func (c *Node) RotateTrusteeKeyPair() error {
-	var err error
-	if c.trusteeKeyPair, err = c.ensureKeyPair(TrusteeKeyPairSubject, true); err != nil {
-		return err
-	}
-	return nil
-}
-
 // RequestTrust requests a trust from the grantor using a grant token
-func (c *Node) RequestTrust(grantorAddr, grantToken string) error {
+func (c *Node) RequestTrust(issuer, grantorAddr, grantToken string) error {
 	if err := c.Serve(); err != nil {
 		return err
 	}
 
+	keyPair, ok := c.keyPairs[issuer]
+	if !ok {
+		return types.ErrUnknownIssuer
+	}
+
 	request := &types.TrustRequest{
 		GrantToken:  grantToken,
-		KeyID:       c.trusteeKeyPair.KeyID,
+		KeyID:       keyPair.KeyID,
+		Issuer:      issuer,
 		TrusteeAddr: c.rpcAddr,
 	}
 
@@ -87,7 +84,7 @@ func (c *Node) GenerateJWKS() (*JSONWebKeySet, error) {
 			return nil, err
 		}
 
-		jwk, err := NewRS256JSONWebKey(publicKey, pair.KeyID, JwkUseSig, pair.Subject)
+		jwk, err := NewRS256JSONWebKey(publicKey, pair.KeyID, JwkUseSig, pair.Issuer)
 		if err != nil {
 			c.log(LogLevelError, "Failed create a new JWK", err)
 			return nil, err
@@ -114,11 +111,23 @@ func (c *Node) Sign(claims jwt.MapClaims, ttl ...int) (string, error) {
 		}
 	}
 
-	// add expiration
-	claims["exp"] = time.Now().Unix() + int64(expiresIn)
-	header := map[string]interface{}{
-		"kid": c.trusteeKeyPair.KeyID,
+	issuer, ok := claims[JwtIssuerClaim]
+	if !ok {
+		return "", types.ErrUnknownIssuer
 	}
 
-	return SignRS256WithClaims([]byte(c.trusteeKeyPair.PrivateKey), claims, header)
+	keyPair, ok := c.keyPairs[issuer.(string)]
+	if !ok {
+		return "", types.ErrUnknownIssuer
+	}
+
+	if err := keyPair.Validate(); err != nil {
+		return "", err
+	}
+
+	// add expiration
+	claims[JwtExpiresAtClaim] = time.Now().Unix() + int64(expiresIn)
+	header := map[string]interface{}{JwtKeyIDHeader: keyPair.KeyID}
+
+	return SignRS256WithClaims([]byte(keyPair.PrivateKey), claims, header)
 }

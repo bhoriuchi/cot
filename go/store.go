@@ -138,14 +138,14 @@ func (c *Node) getTrustGrantTokens(ids []string) ([]*types.TrustGrantToken, erro
 	return tokens, nil
 }
 
-// finds a key pair by subject
-func (c *Node) findKeyPair(subject string) (*types.KeyPair, error) {
+// finds a key pair by issuer
+func (c *Node) findKeyPair(issuer string) (*types.KeyPair, error) {
 	pairs, err := c.getKeyPairs([]string{})
 	if err != nil {
 		return nil, err
 	}
 	for _, pair := range pairs {
-		if pair.Subject == subject {
+		if pair.Issuer == issuer {
 			return pair, nil
 		}
 	}

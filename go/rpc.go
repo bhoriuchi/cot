@@ -69,11 +69,16 @@ func (c *NodeRPCServer) GrantTrust(request *types.TrustRequest, reply *bool) err
 		trustID = trust.ID
 	}
 
+	if request.Issuer != token.Issuer {
+		return fmt.Errorf("the requested issuer does not match the issuer specified in the grant token")
+	}
+
 	// store the trust
 	trust = &types.Trust{
 		ID:          trustID,
 		TrusteeAddr: request.TrusteeAddr,
 		KeyID:       request.KeyID,
+		Issuer:      request.Issuer,
 		Disabled:    false,
 	}
 
@@ -126,7 +131,14 @@ func (c *NodeRPCServer) IssueGrantToken(tokenString *string, reply *types.TrustG
 		return types.ErrInvalidJwtToken
 	}
 
-	grantToken, err := c.node.NewGrantToken()
+	// look up trust key id and find allowed issuers
+	kid := token.Header[JwtKeyIDHeader]
+	trust, err := c.node.findTrust(kid.(string))
+	if err != nil {
+		return err
+	}
+
+	grantToken, err := c.node.NewGrantToken(trust.Issuer)
 	if err != nil {
 		return err
 	}
@@ -144,7 +156,7 @@ func (c *NodeRPCServer) BreakTrust(tokenString *string, reply *bool) error {
 		return types.ErrInvalidJwtToken
 	}
 
-	kid, ok := token.Header["kid"]
+	kid, ok := token.Header[JwtKeyIDHeader]
 	if !ok {
 		return types.ErrKeyIDNotFound
 	}
@@ -159,5 +171,14 @@ func (c *NodeRPCServer) BreakTrust(tokenString *string, reply *bool) error {
 	if reply != nil {
 		*reply = trueValue
 	}
-	return c.node.store.DeleteTrusts([]string{trust.ID})
+
+	if err := c.node.store.DeleteTrusts([]string{trust.ID}); err != nil {
+		return err
+	}
+
+	if err := c.node.refreshAllTrusts(); err != nil {
+		c.node.log(LogLevelError, "failed to refresh trusts", err)
+	}
+
+	return nil
 }
