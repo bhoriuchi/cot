@@ -200,7 +200,7 @@ func (c *Node) Serve() error {
 // NewKeyPair creates a new key pair for the issuer
 // if the issuer key pair exists it rotates the key pair
 func (c *Node) NewKeyPair(issuer string, rotateIfExists bool) (*types.KeyPair, error) {
-	return c.ensureKeyPair(issuer, rotateIfExists)
+	return c.EnsureKeyPair(issuer, rotateIfExists)
 }
 
 func (c *Node) refreshKeyPairs() error {
@@ -216,8 +216,8 @@ func (c *Node) refreshKeyPairs() error {
 	return nil
 }
 
-// creates a keypair if it does not exist and returns it once it does
-func (c *Node) ensureKeyPair(issuer string, rotate bool) (*types.KeyPair, error) {
+// EnsureKeyPair creates a keypair if it does not exist and returns it once it does
+func (c *Node) EnsureKeyPair(issuer string, rotate bool) (*types.KeyPair, error) {
 	// get the key pair for the subject
 	keyPair, err := c.findKeyPair(issuer)
 	if err != nil && err != ErrNotFound {
@@ -283,7 +283,7 @@ func (c *Node) validateTokenIssuer(token *jwt.Token) (*JSONWebKey, error) {
 
 // RotateKeyPair rotates the trustee keypair
 func (c *Node) RotateKeyPair(issuer string) error {
-	keyPair, err := c.ensureKeyPair(issuer, true)
+	keyPair, err := c.EnsureKeyPair(issuer, true)
 	if err != nil {
 		return err
 	}
